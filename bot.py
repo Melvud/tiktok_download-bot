@@ -10,6 +10,21 @@ import re
 import requests
 from flask import Flask
 
+FFMPEG_PATH = "bin/ffmpeg"
+
+def install_ffmpeg():
+    if not os.path.exists(FFMPEG_PATH):
+        print("Скачиваем FFmpeg...")
+        os.makedirs("bin", exist_ok=True)
+        subprocess.run([
+            "curl", "-L", "-o", FFMPEG_PATH,
+            "https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz"
+        ])
+        subprocess.run(["tar", "-xJf", FFMPEG_PATH, "-C", "bin", "--strip-components=1"])
+        os.chmod(FFMPEG_PATH, 0o755)  # Даем права на выполнение
+        print("FFmpeg установлен!")
+
+install_ffmpeg()
 
 API_TOKEN = os.getenv("BOT_TOKEN")  # Читаем токен из переменной окружения
 bot = Bot(token=API_TOKEN)
@@ -27,7 +42,7 @@ app = Flask(__name__)
 def index():
     return "Telegram Bot is running!"
 
-ffmpeg_path = '/opt/homebrew/bin/ffmpeg'
+ffmpeg_path = os.path.abspath("bin/ffmpeg")
 
 # Настроим логирование
 logging.basicConfig(level=logging.INFO)
