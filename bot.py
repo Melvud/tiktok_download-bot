@@ -8,6 +8,8 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 import re
 import requests
+from flask import Flask
+
 
 API_TOKEN = os.getenv("BOT_TOKEN")  # Читаем токен из переменной окружения
 bot = Bot(token=API_TOKEN)
@@ -20,7 +22,9 @@ if __name__ == "__main__":
     asyncio.run(main())
 
 # Для Render
-def app():
+app = Flask(__name__)
+@app.route('/')
+def index():
     return "Telegram Bot is running!"
 
 ffmpeg_path = '/opt/homebrew/bin/ffmpeg'
