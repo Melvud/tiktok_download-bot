@@ -11,6 +11,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 import yt_dlp
 import instaloader
+from dotenv import load_dotenv
 
 FFMPEG_PATH = "bin/ffmpeg"
 PROXY_URL = "http://L7LrDyxN:DCzRREze@92.119.201.253:63668"  # Замените на реальный прокси
@@ -28,6 +29,8 @@ def install_ffmpeg():
         print("FFmpeg установлен!")
 
 install_ffmpeg()
+
+load_dotenv()
 
 API_TOKEN = os.getenv("BOT_TOKEN")  # Читаем токен из переменной окружения
 bot = Bot(token=API_TOKEN)
