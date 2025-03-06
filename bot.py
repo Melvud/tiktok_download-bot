@@ -96,19 +96,18 @@ def download_video_from_reels(url):
     try:
         # Используем instaloader с прокси
         L = instaloader.Instaloader()
-        L.context.session.proxies = {
-            "http": PROXY_URL,
-            "https": PROXY_URL,
-        }
 
-        logging.info(f"Начинаю скачивание видео: {url}")
+        # Устанавливаем прокси для загрузчика
+        L.context.set_proxy(PROXY_URL)
+
+        print(f"Начинаю скачивание видео: {url}")
         shortcode = url.split('/')[-2]  # Получаем shortcode из URL
         post = instaloader.Post.from_shortcode(L.context, shortcode)
 
         # Получаем URL видео
         video_url = post.video_url
 
-        # Скачиваем видео через requests с прокси
+        # Скачиваем видео
         video_file = f"downloads/reels/{shortcode}.mp4"
         video_data = requests.get(video_url, proxies={"http": PROXY_URL, "https": PROXY_URL})
 
@@ -116,13 +115,13 @@ def download_video_from_reels(url):
             f.write(video_data.content)
 
         if os.path.exists(video_file):
-            logging.info(f"Видео успешно скачано: {video_file}")
+            print(f"Видео успешно скачано: {video_file}")
             return video_file
         else:
-            logging.error(f"Ошибка: файл не найден по пути {video_file}")
+            print(f"Ошибка: файл не найден по пути {video_file}")
             return None
     except Exception as e:
-        logging.error(f"Ошибка при скачивании видео с Instagram Reels: {e}")
+        print(f"Ошибка при скачивании видео с Instagram Reels: {e}")
         return None
 
 
