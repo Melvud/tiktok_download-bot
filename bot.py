@@ -9,6 +9,7 @@ from aiogram.fsm.state import State, StatesGroup
 import re
 import requests
 from flask import Flask
+import subprocess
 
 FFMPEG_PATH = "bin/ffmpeg"
 
