@@ -1,17 +1,16 @@
-import instaloader
 import os
 import logging
+import re
+import requests
+import subprocess
+import asyncio
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
 from aiogram.types import FSInputFile, ReplyKeyboardMarkup, KeyboardButton
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-import re
-import requests
-from flask import Flask
-import subprocess
-import asyncio
-
+import yt_dlp
+import instaloader
 
 FFMPEG_PATH = "bin/ffmpeg"
 
@@ -33,28 +32,6 @@ API_TOKEN = os.getenv("BOT_TOKEN")  # Читаем токен из переме�
 bot = Bot(token=API_TOKEN)
 dp = Dispatcher()
 
-async def main():
-    await dp.start_polling(bot)
-
-if __name__ == "__main__":
-    asyncio.run(main())
-
-# Для Render
-app = Flask(__name__)
-@app.route('/')
-def home():
-    return "Telegram Bot is Running!"
-
-async def main():
-    await dp.start_polling(bot)
-
-if __name__ == "__main__":
-    loop = asyncio.get_event_loop()
-    loop.create_task(main())  # Запускаем бота в асинхронном режиме
-    app.run(host='0.0.0.0', port=8080)  # Flask сервер будет слушать на порту 8080
-
-ffmpeg_path = os.path.abspath("bin/ffmpeg")
-
 # Настроим логирование
 logging.basicConfig(level=logging.INFO)
 
@@ -69,7 +46,7 @@ def download_video_from_tiktok(url):
             'noplaylist': True,
             'extractaudio': False,
             'nooverwrites': True,
-            'ffmpeg_location': ffmpeg_path,
+            'ffmpeg_location': FFMPEG_PATH,
         }
 
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -96,7 +73,7 @@ def download_video_from_twitter(url):
             'noplaylist': True,
             'extractaudio': False,  # Убедимся, что видео не будет извлечено как аудио
             'nooverwrites': True,
-            'ffmpeg_location': ffmpeg_path,
+            'ffmpeg_location': FFMPEG_PATH,
         }
 
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -113,7 +90,6 @@ def download_video_from_twitter(url):
     except Exception as e:
         logging.error(f"Ошибка при скачивании видео с Twitter: {e}")
         return None
-
 
 def download_video_from_reels(url):
     try:
@@ -196,7 +172,6 @@ async def handle_platform_choice(message: types.Message, state: FSMContext):
     else:
         await message.reply("Произошла ошибка, попробуйте снова.", reply_markup=create_main_keyboard())
 
-
 # Обработчик сообщений с ссылками
 @dp.message(lambda message: message.text.startswith("http"))
 async def download_video(message: types.Message, state: FSMContext):
@@ -272,14 +247,9 @@ async def download_video(message: types.Message, state: FSMContext):
     # Возвращаем состояние к выбору платформы
     await state.set_state(DownloadState.platform)  # Возвращаем к выбору платформы
 
-# Запуск бота без asyncio.run()
+
 async def main():
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
-    import sys
-    if sys.version_info >= (3, 7):
-        import nest_asyncio
-        nest_asyncio.apply()  # Разрешаем использование asyncio.run() в уже существующем цикле событий
-    import asyncio
     asyncio.run(main())  # Запуск основного асинхронного цикла
