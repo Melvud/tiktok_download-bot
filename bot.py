@@ -14,7 +14,7 @@ import instaloader
 from dotenv import load_dotenv
 
 FFMPEG_PATH = "bin/ffmpeg"
-PROXY_URL = "http://L7LrDyxN:DCzRREze@92.119.201.253:63668"  # Замените на реальный прокси
+ # Замените на реальный прокси
 
 INSTAGRAM_USERNAME = os.getenv("INSTAGRAM_USERNAME")
 INSTAGRAM_PASSWORD = os.getenv("INSTAGRAM_PASSWORD")
@@ -131,7 +131,6 @@ def download_video_from_reels(url):
             return None  # Если не удалось авторизоваться, возвращаем None
 
         # Устанавливаем прокси при инициализации Instaloader
-        L.context.proxy = PROXY_URL
 
         print(f"Начинаю скачивание видео: {url}")
 
