@@ -10,6 +10,8 @@ import re
 import requests
 from flask import Flask
 import subprocess
+import asyncio
+
 
 FFMPEG_PATH = "bin/ffmpeg"
 
@@ -40,8 +42,16 @@ if __name__ == "__main__":
 # Для Render
 app = Flask(__name__)
 @app.route('/')
-def index():
-    return "Telegram Bot is running!"
+def home():
+    return "Telegram Bot is Running!"
+
+async def main():
+    await dp.start_polling(bot)
+
+if __name__ == "__main__":
+    loop = asyncio.get_event_loop()
+    loop.create_task(main())  # Запускаем бота в асинхронном режиме
+    app.run(host='0.0.0.0', port=8080)  # Flask сервер будет слушать на порту 8080
 
 ffmpeg_path = os.path.abspath("bin/ffmpeg")
 
