@@ -16,6 +16,30 @@ from dotenv import load_dotenv
 FFMPEG_PATH = "bin/ffmpeg"
 PROXY_URL = "http://L7LrDyxN:DCzRREze@92.119.201.253:63668"  # Замените на реальный прокси
 
+INSTAGRAM_USERNAME = os.getenv("INSTAGRAM_USERNAME")
+INSTAGRAM_PASSWORD = os.getenv("INSTAGRAM_PASSWORD")
+
+# Функция для авторизации в Instaloader
+def login_instagram():
+    L = instaloader.Instaloader()
+
+    # Если у вас есть сохраненная сессия, загружаем её
+    session_file = f"{INSTAGRAM_USERNAME}_session"
+    if os.path.exists(session_file):
+        L.load_session_from_file(INSTAGRAM_USERNAME)
+        print("Загружена сессия из файла.")
+    else:
+        # Если нет, логинимся и сохраняем сессию
+        try:
+            L.context.log("Выполняется вход в Instagram...")
+            L.login(INSTAGRAM_USERNAME, INSTAGRAM_PASSWORD)
+            L.save_session_to_file()  # Сохраняем сессию
+            print("Успешный вход в Instagram и сохранение сессии.")
+        except Exception as e:
+            print(f"Ошибка при входе: {e}")
+            return None
+    return L
+
 def install_ffmpeg():
     if not os.path.exists(FFMPEG_PATH):
         print("Скачиваем FFmpeg...")
@@ -97,7 +121,10 @@ def download_video_from_twitter(url):
 
 def download_video_from_reels(url):
     try:
-        L = instaloader.Instaloader()
+        # Авторизация
+        L = login_instagram()
+        if L is None:
+            return None  # Если не удалось авторизоваться, возвращаем None
 
         # Устанавливаем прокси при инициализации Instaloader
         L.context.proxy = PROXY_URL
