@@ -109,8 +109,12 @@ def download_video_from_reels(url):
         # Получаем URL видео
         video_url = post.video_url
 
+        # Убедитесь, что папка для сохранения видео существует
+        download_dir = 'downloads/reels'
+        os.makedirs(download_dir, exist_ok=True)  # Создаем папку, если ее нет
+
         # Скачиваем видео
-        video_file = f"downloads/reels/{shortcode}.mp4"
+        video_file = f"{download_dir}/{shortcode}.mp4"
         video_data = requests.get(video_url, proxies={"http": PROXY_URL, "https": PROXY_URL})
 
         with open(video_file, 'wb') as f:
@@ -125,7 +129,6 @@ def download_video_from_reels(url):
     except Exception as e:
         print(f"Ошибка при скачивании видео с Instagram Reels: {e}")
         return None
-
 
 # Функция для безопасного создания имени файла
 def sanitize_filename(filename):
