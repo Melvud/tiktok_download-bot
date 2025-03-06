@@ -13,6 +13,7 @@ import yt_dlp
 import instaloader
 
 FFMPEG_PATH = "bin/ffmpeg"
+PROXY_URL = "http://L7LrDyxN:DCzRREze@92.119.201.253:63668"  # Замените на реальный прокси
 
 def install_ffmpeg():
     if not os.path.exists(FFMPEG_PATH):
@@ -93,7 +94,12 @@ def download_video_from_twitter(url):
 
 def download_video_from_reels(url):
     try:
+        # Используем instaloader с прокси
         L = instaloader.Instaloader()
+        L.context.session.proxies = {
+            "http": PROXY_URL,
+            "https": PROXY_URL,
+        }
 
         logging.info(f"Начинаю скачивание видео: {url}")
         shortcode = url.split('/')[-2]  # Получаем shortcode из URL
@@ -102,9 +108,9 @@ def download_video_from_reels(url):
         # Получаем URL видео
         video_url = post.video_url
 
-        # Скачиваем видео через requests
+        # Скачиваем видео через requests с прокси
         video_file = f"downloads/reels/{shortcode}.mp4"
-        video_data = requests.get(video_url)
+        video_data = requests.get(video_url, proxies={"http": PROXY_URL, "https": PROXY_URL})
 
         with open(video_file, 'wb') as f:
             f.write(video_data.content)
@@ -118,6 +124,7 @@ def download_video_from_reels(url):
     except Exception as e:
         logging.error(f"Ошибка при скачивании видео с Instagram Reels: {e}")
         return None
+
 
 
 # Функция для безопасного создания имени файла
