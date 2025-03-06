@@ -97,11 +97,10 @@ def download_video_from_twitter(url):
 
 def download_video_from_reels(url):
     try:
-        # Используем instaloader с прокси
         L = instaloader.Instaloader()
 
-        # Устанавливаем прокси для загрузчика
-        L.context.set_proxy(PROXY_URL)
+        # Устанавливаем прокси при инициализации Instaloader
+        L.context.proxy = PROXY_URL
 
         print(f"Начинаю скачивание видео: {url}")
         shortcode = url.split('/')[-2]  # Получаем shortcode из URL
@@ -126,7 +125,6 @@ def download_video_from_reels(url):
     except Exception as e:
         print(f"Ошибка при скачивании видео с Instagram Reels: {e}")
         return None
-
 
 
 # Функция для безопасного создания имени файла
