@@ -14,35 +14,7 @@ import instaloader
 from dotenv import load_dotenv
 
 FFMPEG_PATH = "bin/ffmpeg"
- # Замените на реальный прокси
-
-INSTAGRAM_USERNAME = os.getenv("INSTAGRAM_USERNAME")
-INSTAGRAM_PASSWORD = os.getenv("INSTAGRAM_PASSWORD")
-
-# Функция для авторизации в Instaloader
-def login_instagram():
-    L = instaloader.Instaloader()
-
-    # Если у вас есть сохраненная сессия, загружаем её
-    session_file = f"{INSTAGRAM_USERNAME}_session"
-    if os.path.exists(session_file):
-        try:
-            L.load_session_from_file(INSTAGRAM_USERNAME)
-            print("Загружена сессия из файла.")
-        except Exception as e:
-            print(f"Ошибка при загрузке сессии: {e}")
-            return None
-    else:
-        # Если нет, логинимся и сохраняем сессию
-        try:
-            L.context.log("Выполняется вход в Instagram...")
-            L.login(INSTAGRAM_USERNAME, INSTAGRAM_PASSWORD)
-            L.save_session_to_file()  # Сохраняем сессию
-            print("Успешный вход в Instagram и сохранение сессии.")
-        except Exception as e:
-            print(f"Ошибка при входе: {e}")
-            return None
-    return L
+PROXY_URL = "http://L7LrDyxN:DCzRREze@92.119.201.253:63668"  # Замените на реальный прокси
 
 def install_ffmpeg():
     if not os.path.exists(FFMPEG_PATH):
@@ -125,29 +97,17 @@ def download_video_from_twitter(url):
 
 def download_video_from_reels(url):
     try:
-        # Авторизация
-        L = login_instagram()
-        if L is None:
-            return None  # Если не удалось авторизоваться, возвращаем None
+        L = instaloader.Instaloader()
 
         # Устанавливаем прокси при инициализации Instaloader
+        L.context.proxy = PROXY_URL
 
         print(f"Начинаю скачивание видео: {url}")
-
-        # Попробуем извлечь shortcode с помощью регулярного выражения
-        match = re.search(r'/reel/([^/?]+)', url)
-        if match:
-            shortcode = match.group(1)
-            print(f"Извлечён shortcode: {shortcode}")
-        else:
-            print(f"Ошибка: не удалось извлечь shortcode из {url}")
-            return None
-
+        shortcode = url.split('/')[-2]  # Получаем shortcode из URL
         post = instaloader.Post.from_shortcode(L.context, shortcode)
 
         # Получаем URL видео
         video_url = post.video_url
-        print(f"Видео URL: {video_url}")
 
         # Убедитесь, что папка для сохранения видео существует
         download_dir = 'downloads/reels'
@@ -169,7 +129,6 @@ def download_video_from_reels(url):
     except Exception as e:
         print(f"Ошибка при скачивании видео с Instagram Reels: {e}")
         return None
-
 
 # Функция для безопасного создания имени файла
 def sanitize_filename(filename):
