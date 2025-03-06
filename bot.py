@@ -148,6 +148,7 @@ def download_video_from_reels(url):
 
         # Получаем URL видео
         video_url = post.video_url
+        print(f"Видео URL: {video_url}")
 
         # Убедитесь, что папка для сохранения видео существует
         download_dir = 'downloads/reels'
