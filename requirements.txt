@@ -1,0 +1,5 @@
+aiogram
+instaloader
+yt-dlp
+requests
+gunicorn
