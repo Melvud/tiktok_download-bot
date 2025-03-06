@@ -26,8 +26,12 @@ def login_instagram():
     # Если у вас есть сохраненная сессия, загружаем её
     session_file = f"{INSTAGRAM_USERNAME}_session"
     if os.path.exists(session_file):
-        L.load_session_from_file(INSTAGRAM_USERNAME)
-        print("Загружена сессия из файла.")
+        try:
+            L.load_session_from_file(INSTAGRAM_USERNAME)
+            print("Загружена сессия из файла.")
+        except Exception as e:
+            print(f"Ошибка при загрузке сессии: {e}")
+            return None
     else:
         # Если нет, логинимся и сохраняем сессию
         try:
@@ -130,7 +134,16 @@ def download_video_from_reels(url):
         L.context.proxy = PROXY_URL
 
         print(f"Начинаю скачивание видео: {url}")
-        shortcode = url.split('/')[-2]  # Получаем shortcode из URL
+
+        # Попробуем извлечь shortcode с помощью регулярного выражения
+        match = re.search(r'/reel/([^/?]+)', url)
+        if match:
+            shortcode = match.group(1)
+            print(f"Извлечён shortcode: {shortcode}")
+        else:
+            print(f"Ошибка: не удалось извлечь shortcode из {url}")
+            return None
+
         post = instaloader.Post.from_shortcode(L.context, shortcode)
 
         # Получаем URL видео
@@ -156,6 +169,7 @@ def download_video_from_reels(url):
     except Exception as e:
         print(f"Ошибка при скачивании видео с Instagram Reels: {e}")
         return None
+
 
 # Функция для безопасного создания имени файла
 def sanitize_filename(filename):
