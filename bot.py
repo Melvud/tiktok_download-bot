@@ -105,6 +105,7 @@ def download_video_from_reels(url):
             'merge_output_format': 'mp4',  # Объединяем видео и аудио в MP4
             'nooverwrites': True,
             'ffmpeg_location': FFMPEG_PATH,
+            'cookies': 'cookies.txt'
         }
 
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
