@@ -97,37 +97,29 @@ def download_video_from_twitter(url):
 
 def download_video_from_reels(url):
     try:
-        L = instaloader.Instaloader()
+        ydl_opts = {
+            'quiet': True,
+            'format': 'bestvideo+bestaudio/best',
+            'outtmpl': 'downloads/reels/%(id)s.%(ext)s',
+            'noplaylist': True,
+            'merge_output_format': 'mp4',  # Объединяем видео и аудио в MP4
+            'nooverwrites': True,
+            'ffmpeg_location': ffmpeg_path,
+        }
 
-        # Устанавливаем прокси при инициализации Instaloader
-        L.context.proxy = PROXY_URL
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            logging.info(f"Начинаю скачивание видео с Instagram Reels: {url}")
+            info_dict = ydl.extract_info(url, download=True)
+            video_file = f"downloads/reels/{info_dict['id']}.mp4"
 
-        print(f"Начинаю скачивание видео: {url}")
-        shortcode = url.split('/')[-2]  # Получаем shortcode из URL
-        post = instaloader.Post.from_shortcode(L.context, shortcode)
-
-        # Получаем URL видео
-        video_url = post.video_url
-
-        # Убедитесь, что папка для сохранения видео существует
-        download_dir = 'downloads/reels'
-        os.makedirs(download_dir, exist_ok=True)  # Создаем папку, если ее нет
-
-        # Скачиваем видео
-        video_file = f"{download_dir}/{shortcode}.mp4"
-        video_data = requests.get(video_url, proxies={"http": PROXY_URL, "https": PROXY_URL})
-
-        with open(video_file, 'wb') as f:
-            f.write(video_data.content)
-
-        if os.path.exists(video_file):
-            print(f"Видео успешно скачано: {video_file}")
-            return video_file
-        else:
-            print(f"Ошибка: файл не найден по пути {video_file}")
-            return None
+            if os.path.exists(video_file):
+                logging.info(f"Видео успешно скачано: {video_file}")
+                return video_file
+            else:
+                logging.error(f"Ошибка: файл не найден по пути {video_file}")
+                return None
     except Exception as e:
-        print(f"Ошибка при скачивании видео с Instagram Reels: {e}")
+        logging.error(f"Ошибка при скачивании видео с Instagram Reels: {e}")
         return None
 
 # Функция для безопасного создания имени файла
