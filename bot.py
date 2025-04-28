@@ -229,8 +229,8 @@ async def download_video(message: types.Message, state: FSMContext):
                     await loading_message.edit_text("⚠️ Произошла ошибка при отправке видео. Попробуйте позже.")
                 finally:
                     try:
-                        # Удаляем файл только после отправки
-                        os.remove(video_file)
+                        # Удаляем файл только после успешной отправки
+                        await asyncio.to_thread(os.remove, video_file)  # Асинхронное удаление файла
                         logging.info(f"Файл {video_file} удален после отправки.")
                     except Exception as e:
                         logging.error(f"Ошибка при удалении файла {video_file}: {e}")
