@@ -133,7 +133,6 @@ def create_main_keyboard():
         keyboard=[
             [KeyboardButton(text="Скачать с TikTok")],
             [KeyboardButton(text="Скачать с X(Twitter)")],
-            [KeyboardButton(text="Скачать с Reels")],
         ],
         resize_keyboard=True
     )
