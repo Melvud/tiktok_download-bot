@@ -158,11 +158,11 @@ def get_platform_from_url(url: str) -> Optional[str]:
         return "twitter"
     return None
 
-# --- Конвертация (Только для Instagram и YouTube Shorts!) ---
+# --- Конвертация (запасной план для IG/Shorts после репака) ---
 def convert_video_for_mobile(input_path: str) -> Optional[str]:
     """
     Перекод в mp4 (H.264 + AAC) для совместимости iOS/Android.
-    Используется ТОЛЬКО для Instagram и YouTube Shorts (когда без этого на iOS видео не играет).
+    Используется ТОЛЬКО если после репака кодеки всё ещё не h264/aac и это Instagram/YouTube Shorts.
     Если аудио уже AAC — копируем его, чтобы снизить нагрузку.
     """
     try:
@@ -206,7 +206,7 @@ def download_video_from_url(
 ) -> Optional[str]:
     """
     Скачивает видео и возвращает путь к файлу (как скачано у источника).
-    Репак выполняется отдельно. Перекодировка — ТОЛЬКО для Instagram и YouTube Shorts (по необходимости для iOS).
+    Далее ВСЕГДА делаем репак. Перекодировка — только редкий запасной случай.
     """
     try:
         unique_id = uuid.uuid4()
@@ -241,13 +241,12 @@ def download_video_from_url(
             ydl_opts["format"] = format_override
         else:
             if platform == "youtube_shorts":
-                # Сначала прогрессивный MP4 (совместим с iOS), затем avc1+m4a, потом любой (чтобы не падать)
+                # Сначала прогрессивный MP4 (совместим с iOS), затем avc1+m4a, потом любой
                 ydl_opts["format"] = (
                     "b[ext=mp4]/"
                     "bv*[vcodec^=avc1][ext=mp4]+ba[ext=m4a]/"
                     "bv*+ba/b"
                 )
-                # merge_output_format не форсим — yt-dlp сам сделает mkv/mp4, потом при необходимости репакнем/перекодируем
             else:
                 ydl_opts["format"] = (
                     "bestvideo[vcodec^=avc1][ext=mp4]+bestaudio[ext=m4a]/"
@@ -376,39 +375,20 @@ async def process_video_link(message: types.Message, state: FSMContext):
         await message.answer(hint, reply_markup=create_main_keyboard())
         return
 
-    # 2) Проверяем кодеки и делаем репак/перекодку (перекод — только IG и YouTube Shorts)
-    vcodec, acodec = await asyncio.to_thread(check_codecs, video_file)
-    path_to_send = video_file
-    repacked_path = None
+    # 2) ВСЕГДА делаем репак
+    repacked_path = await asyncio.to_thread(repack_to_mp4, video_file)
+    path_after_repack = repacked_path or video_file
+
+    # 3) Проверяем кодеки после репака; при необходимости — редкая конвертация (только IG/Shorts)
+    rv, ra = await asyncio.to_thread(check_codecs, path_after_repack)
     converted_path = None
+    if platform in {"instagram", "youtube_shorts"} and not (rv == "h264" and ra == "aac"):
+        await loading_message.edit_text("🔧 Делаю файл совместимым с iOS…")
+        converted_path = await asyncio.to_thread(convert_video_for_mobile, path_after_repack)
 
-    need_strict_ios = platform in {"instagram", "youtube_shorts"}
+    path_to_send = converted_path or path_after_repack
 
-    # Если контейнер/кодеки не совместимы с iOS — пытаемся репакнуть
-    if not (vcodec == "h264" and acodec == "aac"):
-        repacked_path = await asyncio.to_thread(repack_to_mp4, video_file)
-        if repacked_path:
-            rv, ra = await asyncio.to_thread(check_codecs, repacked_path)
-            if rv == "h264" and ra == "aac":
-                path_to_send = repacked_path
-            else:
-                if need_strict_ios:
-                    await loading_message.edit_text("🔧 Делаю файл совместимым с iOS…")
-                    converted_path = await asyncio.to_thread(convert_video_for_mobile, video_file)
-                    path_to_send = converted_path or repacked_path or video_file
-                else:
-                    logging.info("Кодеки не совместимы, но перекодирование отключено для этой платформы — отправляю как есть.")
-                    path_to_send = repacked_path or video_file
-        else:
-            if need_strict_ios:
-                await loading_message.edit_text("🔧 Делаю файл совместимым с iOS…")
-                converted_path = await asyncio.to_thread(convert_video_for_mobile, video_file)
-                path_to_send = converted_path or video_file
-            else:
-                logging.info("Репак не удался, перекодирование выключено — отправляю исходный файл.")
-                path_to_send = video_file
-
-    # 3) Проверяем лимит Телеграма — НЕ перекачиваем и НЕ уменьшаем, просто сообщаем
+    # 4) Проверяем лимит Телеграма — НЕ перекачиваем и НЕ уменьшаем, просто сообщаем
     size_bytes = file_size(path_to_send)
     if size_bytes > TG_UPLOAD_LIMIT:
         await loading_message.edit_text(
@@ -426,7 +406,7 @@ async def process_video_link(message: types.Message, state: FSMContext):
                     logging.error(f"Ошибка при удалении файла {p}: {e}")
         return
 
-    # 4) Отправляем
+    # 5) Отправляем
     await loading_message.edit_text("📤 Отправляю видео...")
     try:
         video_input = FSInputFile(path_to_send)
@@ -445,7 +425,8 @@ async def process_video_link(message: types.Message, state: FSMContext):
         await message.answer("Попробуйте ещё раз или выберите платформу:", reply_markup=create_main_keyboard())
     finally:
         # Чистим файлы
-        for p in {video_file, repacked_path, converted_path}:
+        for p in {video_file, repacked_path, converted_path, path_to_send}:
+            # path_to_send тоже временный файл из репака/конверта, удаляем
             if p and os.path.exists(p):
                 try:
                     os.remove(p)
@@ -472,37 +453,26 @@ async def inline_handler(query: InlineQuery):
     repacked_path: Optional[str] = None
     converted_path: Optional[str] = None
     try:
-        # Скачиваем
+        # 1) Скачиваем
         video_file_path = await asyncio.to_thread(download_video_from_url, url, platform)
+
         if video_file_path:
-            send_path = video_file_path
-            vcodec, acodec = await asyncio.to_thread(check_codecs, video_file_path)
-            need_strict_ios = platform in {"instagram", "youtube_shorts"}
+            # 2) ВСЕГДА репак
+            repacked_path = await asyncio.to_thread(repack_to_mp4, video_file_path)
+            send_path = repacked_path or video_file_path
 
-            if not (vcodec == "h264" and acodec == "aac"):
-                repacked_path = await asyncio.to_thread(repack_to_mp4, video_file_path)
-                if repacked_path:
-                    rv, ra = await asyncio.to_thread(check_codecs, repacked_path)
-                    if rv == "h264" and ra == "aac":
-                        send_path = repacked_path
-                    else:
-                        if need_strict_ios:
-                            converted_path = await asyncio.to_thread(convert_video_for_mobile, video_file_path)
-                            send_path = converted_path or repacked_path or video_file_path
-                        else:
-                            send_path = repacked_path or video_file_path
-                else:
-                    if need_strict_ios:
-                        converted_path = await asyncio.to_thread(convert_video_for_mobile, video_file_path)
-                        send_path = converted_path or video_file_path
-                    else:
-                        send_path = video_file_path
+            # 3) Проверяем кодеки после репака и при необходимости конвертируем (только IG/Shorts)
+            rv, ra = await asyncio.to_thread(check_codecs, send_path)
+            if platform in {"instagram", "youtube_shorts"} and not (rv == "h264" and ra == "aac"):
+                converted_path = await asyncio.to_thread(convert_video_for_mobile, send_path)
+                send_path = converted_path or send_path
 
-            # Проверка лимита
+            # 4) Лимит
             if file_size(send_path) > TG_UPLOAD_LIMIT:
                 await query.answer([], cache_time=1)
                 return
 
+            # 5) Грузим в личку, берём file_id и отдаём cached-видео
             sent = await bot.send_video(chat_id=query.from_user.id, video=FSInputFile(send_path))
             file_id = sent.video.file_id
             await sent.delete()
