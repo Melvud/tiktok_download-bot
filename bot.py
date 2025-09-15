@@ -52,11 +52,10 @@ def install_ffmpeg() -> None:
         temp_dir = "ffmpeg_temp"
         os.makedirs(temp_dir, exist_ok=True)
         subprocess.run(["tar", "-xJf", archive_path, "-C", temp_dir, "--strip-components=1"], check=True)
-        # В архиве есть ffmpeg и ffprobe
+        # Переносим и ffmpeg, и ffprobe
         os.rename(os.path.join(temp_dir, "ffmpeg"), FFMPEG_PATH)
-        ffprobe_src = os.path.join(temp_dir, "ffprobe")
-        if os.path.exists(ffprobe_src):
-            os.rename(ffprobe_src, "bin/ffprobe")
+        if os.path.exists(os.path.join(temp_dir, "ffprobe")):
+            os.rename(os.path.join(temp_dir, "ffprobe"), "bin/ffprobe")
             os.chmod("bin/ffprobe", 0o755)
         os.chmod(FFMPEG_PATH, 0o755)
         os.remove(archive_path)
@@ -192,14 +191,12 @@ def download_video_from_url(
         output_template = f"downloads/{platform}/{unique_id}.%(ext)s"
         os.makedirs(f"downloads/{platform}", exist_ok=True)
 
+        # Базовые опции
         ydl_opts = {
             "quiet": True,
             "no_warnings": True,
-            # Сразу просим H.264 (avc1) + AAC в MP4
-            "format": "bestvideo[vcodec^=avc1][ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]",
             "outtmpl": output_template,
             "noplaylist": True,
-            "merge_output_format": "mp4",
             "ffmpeg_location": FFMPEG_PATH if os.path.exists(FFMPEG_PATH) else None,
             "retries": 5,
             "fragment_retries": 5,
@@ -217,6 +214,23 @@ def download_video_from_url(
         if platform == "instagram" and os.path.exists(COOKIES_FILE):
             ydl_opts["cookiefile"] = COOKIES_FILE
             logging.info(f"Использую cookiefile: {COOKIES_FILE}")
+
+        # Форматная строка и merge-поведение — зависят от платформы
+        if platform == "youtube":
+            # Для YouTube делаем более гибкий выбор форматов, и НЕ форсим merge в mp4.
+            ydl_opts["format"] = (
+                "bv*[vcodec^=avc1][ext=mp4]+ba[ext=m4a]/"
+                "b[ext=mp4]/"
+                "bv*+ba/b"
+            )
+            # Позволяем yt-dlp самому выбрать контейнер (mkv, webm), потом мы сами при необходимости репакнем/сконвертим
+        else:
+            # Для остальных стараемся сразу получить mp4+h264+aac
+            ydl_opts["format"] = (
+                "bestvideo[vcodec^=avc1][ext=mp4]+bestaudio[ext=m4a]/"
+                "best[ext=mp4]/best"
+            )
+            ydl_opts["merge_output_format"] = "mp4"
 
         if progress_hook:
             ydl_opts["progress_hooks"] = [progress_hook]
