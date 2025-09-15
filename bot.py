@@ -27,13 +27,10 @@ load_dotenv()
 # --- Конфигурация ---
 API_TOKEN = os.getenv("BOT_TOKEN")
 FFMPEG_PATH = "bin/ffmpeg"
+COOKIES_FILE = os.getenv("COOKIES_FILE", "ig_cookies.txt")
 
 # --- Установка FFmpeg (если отсутствует) ---
 def install_ffmpeg() -> None:
-    """
-    Пытается скачать статический FFmpeg для Linux x86_64.
-    Если у вас другая ОС/архитектура — установите FFmpeg системно и уберите ffmpeg_location из опций.
-    """
     if os.path.exists(FFMPEG_PATH):
         return
     try:
@@ -97,10 +94,6 @@ def download_video_from_url(
     platform: str,
     progress_hook: Optional[Callable[[dict], None]] = None,
 ) -> Optional[str]:
-    """
-    Универсальная функция для скачивания видео со всех платформ.
-    Возвращает путь к файлу или None.
-    """
     try:
         unique_id = uuid.uuid4()
         output_template = f"downloads/{platform}/{unique_id}.%(ext)s"
@@ -108,12 +101,12 @@ def download_video_from_url(
 
         ydl_opts = {
             "quiet": True,
-            "no_warnings": True,  # скрываем ворнинги в логах
+            "no_warnings": True,
             "format": "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
             "outtmpl": output_template,
             "noplaylist": True,
             "merge_output_format": "mp4",
-            "ffmpeg_location": FFMPEG_PATH,  # если FFmpeg системный, можно убрать эту строку
+            "ffmpeg_location": FFMPEG_PATH,
             "retries": 5,
             "fragment_retries": 5,
             "concurrent_fragment_downloads": 1,
@@ -125,6 +118,10 @@ def download_video_from_url(
                 )
             },
         }
+
+        if platform == "instagram" and os.path.exists(COOKIES_FILE):
+            ydl_opts["cookiefile"] = COOKIES_FILE
+            logging.info(f"Использую cookiefile: {COOKIES_FILE}")
 
         if progress_hook:
             ydl_opts["progress_hooks"] = [progress_hook]
@@ -175,7 +172,6 @@ async def process_video_link(message: types.Message, state: FSMContext):
 
     loading_message = await message.reply("📥 Подготовка к загрузке...")
 
-    # Захватываем главный цикл событий, который нужен прогресс-хуку (он выполняется в другом потоке)
     loop = asyncio.get_running_loop()
     last_update_time = 0.0
 
@@ -208,7 +204,6 @@ async def process_video_link(message: types.Message, state: FSMContext):
         except Exception as e:
             logging.debug(f"Ошибка в progress_hook: {e}")
 
-    # Скачивание в пуле потоков, чтобы не блокировать обработчик
     video_file = await asyncio.to_thread(download_video_from_url, url, platform, progress_hook)
 
     await loading_message.edit_text("📤 Отправляю видео...")
@@ -218,13 +213,10 @@ async def process_video_link(message: types.Message, state: FSMContext):
             await message.reply_video(video_input)
             await loading_message.delete()
             logging.info(f"Видео с {platform} успешно отправлено.")
-            # благодарность + возврат клавиатуры
             await message.answer("Спасибо за использование меня 🥰", reply_markup=create_main_keyboard())
         except Exception as e:
             logging.exception(f"Ошибка при отправке видео: {e}")
-            # редактируем без клавиатуры...
             await loading_message.edit_text("⚠️ Ошибка при отправке видео.")
-            # ...а клавиатуру шлём отдельным сообщением
             await message.answer("Попробуйте ещё раз или выберите платформу:", reply_markup=create_main_keyboard())
         finally:
             try:
@@ -233,15 +225,12 @@ async def process_video_link(message: types.Message, state: FSMContext):
             except OSError as e:
                 logging.error(f"Ошибка при удалении файла {video_file}: {e}")
     else:
-        # нельзя передавать ReplyKeyboardMarkup в edit_text -> отправим отдельно
         await loading_message.edit_text("❌ Не удалось скачать видео по этой ссылке.")
-        # дружелюбная подсказка и клавиатура
         hint = "Это мог быть приватный/возрастной ролик или Instagram попросил вход. Попробуйте другую ссылку."
         if platform == "instagram":
-            hint = "Instagram мог потребовать вход или сработал лимит. Попробуйте другую публичную ссылку."
+            hint = "Instagram для этой ссылки требует вход или сработал лимит. Попробуйте другую публичную ссылку."
         await message.answer(hint, reply_markup=create_main_keyboard())
 
-# --- Инлайн режим ---
 @dp.inline_query()
 async def inline_handler(query: InlineQuery):
     url = (query.query or "").strip()
@@ -260,7 +249,6 @@ async def inline_handler(query: InlineQuery):
     try:
         video_file_path = await asyncio.to_thread(download_video_from_url, url, platform)
         if video_file_path:
-            # Отправляем пользователю в личку, чтобы получить file_id, и используем кэш
             sent = await bot.send_video(chat_id=query.from_user.id, video=FSInputFile(video_file_path))
             file_id = sent.video.file_id
             await sent.delete()
@@ -288,6 +276,6 @@ async def main():
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
-    install_ffmpeg()  # уберите, если FFmpeg уже установлен системно
+    install_ffmpeg()
     os.makedirs("downloads", exist_ok=True)
     asyncio.run(main())
