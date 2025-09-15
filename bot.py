@@ -217,15 +217,12 @@ def download_video_from_url(
 
         # Форматная строка и merge-поведение — зависят от платформы
         if platform == "youtube":
-            # Для YouTube делаем более гибкий выбор форматов, и НЕ форсим merge в mp4.
             ydl_opts["format"] = (
                 "bv*[vcodec^=avc1][ext=mp4]+ba[ext=m4a]/"
                 "b[ext=mp4]/"
                 "bv*+ba/b"
             )
-            # Позволяем yt-dlp самому выбрать контейнер (mkv, webm), потом мы сами при необходимости репакнем/сконвертим
         else:
-            # Для остальных стараемся сразу получить mp4+h264+aac
             ydl_opts["format"] = (
                 "bestvideo[vcodec^=avc1][ext=mp4]+bestaudio[ext=m4a]/"
                 "best[ext=mp4]/best"
@@ -285,33 +282,57 @@ async def process_video_link(message: types.Message, state: FSMContext):
 
     loop = asyncio.get_running_loop()
     last_update_time = 0.0
+    spinner = ("⠋","⠙","⠹","⠸","⠼","⠴","⠦","⠧","⠇","⠏")
+    spin_i = 0
+    chat_id = loading_message.chat.id
+    msg_id = loading_message.message_id
 
     def progress_hook(d: dict) -> None:
-        nonlocal last_update_time
+        nonlocal last_update_time, spin_i
         try:
-            if d.get("status") == "downloading":
-                current_time = time.time()
-                if current_time - last_update_time < 1.5:
+            status = d.get("status")
+            now = time.time()
+            if status == "downloading":
+                if now - last_update_time < 1.2:
                     return
                 total = d.get("total_bytes") or d.get("total_bytes_estimate") or 0
+                downloaded = d.get("downloaded_bytes") or 0
+                speed = d.get("speed") or 0.0
                 if total > 0:
-                    percent = (d.get("downloaded_bytes") or 0) / total * 100.0
-                    speed = d.get("speed") or 0.0
-                    progress_bar = "".join("█" if i < percent / 10 else "░" for i in range(10))
-                    status_text = (
-                        "📥 **Скачиваю видео...**\n"
-                        f"`{progress_bar}` {percent:.1f}%\n"
-                        f"Скорость: {speed / 1024 / 1024:.2f} МБ/с"
+                    percent = downloaded / total * 100.0
+                    filled = int(percent // 10)
+                    bar = "█" * filled + "░" * (10 - filled)
+                    text = (
+                        f"📥 Скачиваю видео…\n"
+                        f"{bar} {percent:.1f}%\n"
+                        f"Скорость: {speed/1024/1024:.2f} МБ/с"
                     )
-                    fut = asyncio.run_coroutine_threadsafe(
-                        loading_message.edit_text(status_text, parse_mode="Markdown"),
-                        loop,
+                else:
+                    spin = spinner[spin_i % len(spinner)]
+                    spin_i += 1
+                    text = (
+                        f"📥 Скачиваю видео… {spin}\n"
+                        f"Загружено: {downloaded/1024/1024:.2f} МБ\n"
+                        f"Скорость: {speed/1024/1024:.2f} МБ/с"
                     )
-                    try:
-                        fut.result(timeout=0)
-                    except Exception:
-                        pass
-                    last_update_time = current_time
+                fut = asyncio.run_coroutine_threadsafe(
+                    bot.edit_message_text(chat_id=chat_id, message_id=msg_id, text=text),
+                    loop,
+                )
+                try:
+                    fut.result(timeout=0)
+                except Exception:
+                    pass
+                last_update_time = now
+            elif status == "finished":
+                fut = asyncio.run_coroutine_threadsafe(
+                    bot.edit_message_text(chat_id=chat_id, message_id=msg_id, text="✅ Скачивание завершено, обрабатываю…"),
+                    loop,
+                )
+                try:
+                    fut.result(timeout=0)
+                except Exception:
+                    pass
         except Exception as e:
             logging.debug(f"Ошибка в progress_hook: {e}")
 
