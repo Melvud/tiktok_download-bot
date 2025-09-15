@@ -29,8 +29,13 @@ API_TOKEN = os.getenv("BOT_TOKEN")
 FFMPEG_PATH = "bin/ffmpeg"
 COOKIES_FILE = os.getenv("COOKIES_FILE", "ig_cookies.txt")
 
-# --- Установка FFmpeg (если отсутствует) ---
+# --- Помощники ---
+def ffmpeg_bin() -> str:
+    """Возвращает путь к ffmpeg: локальный бинарь или системный."""
+    return FFMPEG_PATH if os.path.exists(FFMPEG_PATH) else "ffmpeg"
+
 def install_ffmpeg() -> None:
+    """Попытка скачать статический ffmpeg (Linux x86_64). На macOS/Windows поставьте системно."""
     if os.path.exists(FFMPEG_PATH):
         return
     try:
@@ -42,6 +47,7 @@ def install_ffmpeg() -> None:
         temp_dir = "ffmpeg_temp"
         os.makedirs(temp_dir, exist_ok=True)
         subprocess.run(["tar", "-xJf", archive_path, "-C", temp_dir, "--strip-components=1"], check=True)
+        # В архиве есть и ffprobe, но для простоты нам нужен только ffmpeg
         os.rename(os.path.join(temp_dir, "ffmpeg"), FFMPEG_PATH)
         os.chmod(FFMPEG_PATH, 0o755)
         os.remove(archive_path)
@@ -88,12 +94,55 @@ def get_platform_from_url(url: str) -> Optional[str]:
         return "twitter"
     return None
 
+# --- Конвертация для iOS/Android ---
+def convert_video_for_mobile(input_path: str) -> Optional[str]:
+    """
+    Преобразует видео в mp4 (H.264 + AAC), совместимое с iOS/Android/Telegram iOS.
+    Возвращает путь к конвертированному файлу или None при ошибке.
+    """
+    try:
+        base, _ext = os.path.splitext(input_path)
+        output_path = f"{base}_ios.mp4"
+        cmd = [
+            ffmpeg_bin(),
+            "-y",
+            "-i", input_path,
+            # Видео: H.264, профили для широкой совместимости, прогрессивная разметка
+            "-c:v", "libx264",
+            "-preset", "fast",
+            "-crf", "23",
+            "-profile:v", "high",
+            "-level:v", "4.0",
+            "-pix_fmt", "yuv420p",
+            # Аудио: AAC
+            "-c:a", "aac",
+            "-b:a", "128k",
+            # Для стриминга/быстрого старта в Telegram/iOS
+            "-movflags", "+faststart",
+            # Иногда исходные ширина/высота бывают нечётными — поправим
+            "-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2",
+            output_path,
+        ]
+        logging.info(f"Конвертирую в совместимый формат: {output_path}")
+        subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        return output_path if os.path.exists(output_path) else None
+    except subprocess.CalledProcessError as e:
+        logging.error(f"Ошибка конвертации видео: {e}")
+        return None
+    except Exception as e:
+        logging.exception(f"Неожиданная ошибка конвертации: {e}")
+        return None
+
 # --- Скачивание ---
 def download_video_from_url(
     url: str,
     platform: str,
     progress_hook: Optional[Callable[[dict], None]] = None,
 ) -> Optional[str]:
+    """
+    Скачивает видео и возвращает путь к файлу (как скачано у источника).
+    Конвертация выполняется отдельно.
+    """
     try:
         unique_id = uuid.uuid4()
         output_template = f"downloads/{platform}/{unique_id}.%(ext)s"
@@ -106,7 +155,7 @@ def download_video_from_url(
             "outtmpl": output_template,
             "noplaylist": True,
             "merge_output_format": "mp4",
-            "ffmpeg_location": FFMPEG_PATH,
+            "ffmpeg_location": FFMPEG_PATH if os.path.exists(FFMPEG_PATH) else None,
             "retries": 5,
             "fragment_retries": 5,
             "concurrent_fragment_downloads": 1,
@@ -119,6 +168,7 @@ def download_video_from_url(
             },
         }
 
+        # Поддержка cookiefile только для Instagram (если файл есть)
         if platform == "instagram" and os.path.exists(COOKIES_FILE):
             ydl_opts["cookiefile"] = COOKIES_FILE
             logging.info(f"Использую cookiefile: {COOKIES_FILE}")
@@ -150,7 +200,9 @@ async def cmd_start(message: types.Message, state: FSMContext):
     await state.clear()
     await message.reply(
         "👋 Привет! Я бот для скачивания видео.\n\n"
-        "Просто отправь мне ссылку на видео, или выбери платформу ниже.",
+        "Просто отправь мне ссылку на видео, или выбери платформу ниже.\n\n"
+        "💡 Совет: ты можешь использовать меня прямо в любом чате!\n"
+        "Для этого напиши: @tktdown_bot <ссылка>",
         reply_markup=create_main_keyboard(),
     )
 
@@ -204,33 +256,53 @@ async def process_video_link(message: types.Message, state: FSMContext):
         except Exception as e:
             logging.debug(f"Ошибка в progress_hook: {e}")
 
+    # Скачиваем
     video_file = await asyncio.to_thread(download_video_from_url, url, platform, progress_hook)
 
-    await loading_message.edit_text("📤 Отправляю видео...")
-    if video_file:
-        try:
-            video_input = FSInputFile(video_file)
-            await message.reply_video(video_input)
-            await loading_message.delete()
-            logging.info(f"Видео с {platform} успешно отправлено.")
-            await message.answer("Спасибо за использование меня 🥰", reply_markup=create_main_keyboard())
-        except Exception as e:
-            logging.exception(f"Ошибка при отправке видео: {e}")
-            await loading_message.edit_text("⚠️ Ошибка при отправке видео.")
-            await message.answer("Попробуйте ещё раз или выберите платформу:", reply_markup=create_main_keyboard())
-        finally:
-            try:
-                os.remove(video_file)
-                logging.info(f"Файл {video_file} удален.")
-            except OSError as e:
-                logging.error(f"Ошибка при удалении файла {video_file}: {e}")
-    else:
+    if not video_file:
         await loading_message.edit_text("❌ Не удалось скачать видео по этой ссылке.")
         hint = "Это мог быть приватный/возрастной ролик или Instagram попросил вход. Попробуйте другую ссылку."
         if platform == "instagram":
             hint = "Instagram для этой ссылки требует вход или сработал лимит. Попробуйте другую публичную ссылку."
         await message.answer(hint, reply_markup=create_main_keyboard())
+        return
 
+    # Конвертируем для iOS/Android
+    await loading_message.edit_text("🔧 Конвертирую видео для совместимости iOS/Android...")
+    converted_path = await asyncio.to_thread(convert_video_for_mobile, video_file)
+    path_to_send = converted_path or video_file
+    if converted_path:
+        logging.info(f"Конвертация завершена: {converted_path}")
+    else:
+        logging.info("Конвертация не удалась, отправляю исходный файл.")
+
+    # Отправляем
+    await loading_message.edit_text("📤 Отправляю видео...")
+    try:
+        video_input = FSInputFile(path_to_send)
+        await message.reply_video(video_input)
+        await loading_message.delete()
+        logging.info(f"Видео с {platform} успешно отправлено.")
+        await message.answer("Спасибо за использование меня 🥰", reply_markup=create_main_keyboard())
+        await message.answer(
+        "💡 Ты также можешь пользоваться inline-режимом:\n"
+        "просто напиши @tktdown_bot <ссылка> прямо в любом чате.",
+        reply_markup=create_main_keyboard(),)
+    except Exception as e:
+        logging.exception(f"Ошибка при отправке видео: {e}")
+        await loading_message.edit_text("⚠️ Ошибка при отправке видео.")
+        await message.answer("Попробуйте ещё раз или выберите платформу:", reply_markup=create_main_keyboard())
+    finally:
+        # Чистим файлы
+        for p in {video_file, converted_path}:
+            if p and os.path.exists(p):
+                try:
+                    os.remove(p)
+                    logging.info(f"Файл {p} удален.")
+                except OSError as e:
+                    logging.error(f"Ошибка при удалении файла {p}: {e}")
+
+# --- Инлайн режим ---
 @dp.inline_query()
 async def inline_handler(query: InlineQuery):
     url = (query.query or "").strip()
@@ -246,10 +318,15 @@ async def inline_handler(query: InlineQuery):
 
     logging.info(f"Инлайн-запрос на скачивание с {platform}: {url}")
     video_file_path: Optional[str] = None
+    converted_path: Optional[str] = None
     try:
+        # Скачиваем и конвертируем так же, как в обычном режиме
         video_file_path = await asyncio.to_thread(download_video_from_url, url, platform)
         if video_file_path:
-            sent = await bot.send_video(chat_id=query.from_user.id, video=FSInputFile(video_file_path))
+            converted_path = await asyncio.to_thread(convert_video_for_mobile, video_file_path)
+            send_path = converted_path or video_file_path
+
+            sent = await bot.send_video(chat_id=query.from_user.id, video=FSInputFile(send_path))
             file_id = sent.video.file_id
             await sent.delete()
 
@@ -264,9 +341,13 @@ async def inline_handler(query: InlineQuery):
     except Exception as e:
         logging.exception(f"Ошибка в инлайн-режиме при обработке файла: {e}")
     finally:
-        if video_file_path and os.path.exists(video_file_path):
-            os.remove(video_file_path)
-            logging.info(f"Инлайн-файл {video_file_path} удален.")
+        for p in {video_file_path, converted_path}:
+            if p and os.path.exists(p):
+                try:
+                    os.remove(p)
+                    logging.info(f"Инлайн-файл {p} удален.")
+                except OSError as e:
+                    logging.error(f"Ошибка при удалении файла {p}: {e}")
 
     await query.answer(results, cache_time=1)
 
@@ -276,6 +357,6 @@ async def main():
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
-    install_ffmpeg()
+    install_ffmpeg()  # уберите, если FFmpeg уже установлен системно
     os.makedirs("downloads", exist_ok=True)
     asyncio.run(main())
