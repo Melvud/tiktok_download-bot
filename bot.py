@@ -169,7 +169,7 @@ async def process_video_link(message: types.Message, state: FSMContext):
 
     platform = get_platform_from_url(url)
     if not platform:
-        await message.reply("Не могу определить платформу по этой ссылке.")
+        await message.reply("Не могу определить платформу по этой ссылке.", reply_markup=create_main_keyboard())
         return
 
     loading_message = await message.reply("📥 Подготовка к загрузке...")
@@ -219,9 +219,13 @@ async def process_video_link(message: types.Message, state: FSMContext):
             await message.reply_video(video_input)
             await loading_message.delete()
             logging.info(f"Видео с {platform} успешно отправлено.")
+
+            # ✨ Новое: благодарность + возврат клавиатуры
+            await message.answer("Спасибо за использование меня 🥰", reply_markup=create_main_keyboard())
+
         except Exception as e:
             logging.exception(f"Ошибка при отправке видео: {e}")
-            await loading_message.edit_text("⚠️ Ошибка при отправке видео.")
+            await loading_message.edit_text("⚠️ Ошибка при отправке видео.", reply_markup=create_main_keyboard())
         finally:
             try:
                 os.remove(video_file)
@@ -229,7 +233,7 @@ async def process_video_link(message: types.Message, state: FSMContext):
             except OSError as e:
                 logging.error(f"Ошибка при удалении файла {video_file}: {e}")
     else:
-        await loading_message.edit_text("❌ Не удалось скачать видео по этой ссылке.")
+        await loading_message.edit_text("❌ Не удалось скачать видео по этой ссылке.", reply_markup=create_main_keyboard())
 
 # --- Инлайн режим ---
 @dp.inline_query()
