@@ -28,6 +28,8 @@ load_dotenv()
 API_TOKEN = os.getenv("BOT_TOKEN")
 FFMPEG_PATH = "bin/ffmpeg"
 COOKIES_FILE = os.getenv("COOKIES_FILE", "ig_cookies.txt")
+TG_UPLOAD_LIMIT_MB = int(os.getenv("TG_UPLOAD_LIMIT_MB", "49"))  # лимит загрузки для ботов
+TG_UPLOAD_LIMIT = TG_UPLOAD_LIMIT_MB * 1024 * 1024
 
 # --- Помощники ---
 def ffmpeg_bin() -> str:
@@ -100,6 +102,23 @@ def repack_to_mp4(input_path: str) -> Optional[str]:
         logging.error(f"Ошибка репака: {e}")
         return None
 
+def file_size(path: str) -> int:
+    try:
+        return os.path.getsize(path)
+    except Exception:
+        return 0
+
+def human_mb(n: int) -> str:
+    return f"{n/1024/1024:.1f} МБ"
+
+def display_platform_name(platform: str) -> str:
+    return {
+        "tiktok": "tiktok",
+        "instagram": "instagram",
+        "twitter": "twitter",
+        "youtube_shorts": "youtube shorts",
+    }.get(platform, platform)
+
 # --- Логирование и инициализация бота ---
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 if not API_TOKEN:
@@ -117,7 +136,7 @@ def create_main_keyboard() -> ReplyKeyboardMarkup:
         keyboard=[
             [KeyboardButton(text="📥 TikTok")],
             [KeyboardButton(text="📸 Instagram")],
-            [KeyboardButton(text="🎥 YouTube")],
+            [KeyboardButton(text="🎬 YouTube Shorts")],  # ← переименовано
             [KeyboardButton(text="🐦 X (Twitter)")],
         ],
         resize_keyboard=True,
@@ -133,16 +152,17 @@ def get_platform_from_url(url: str) -> Optional[str]:
     if "instagram.com" in u:
         return "instagram"
     if "youtube.com" in u or "youtu.be" in u:
-        return "youtube"
+        # трактуем любые ютуб-ссылки как shorts для простоты
+        return "youtube_shorts"
     if "twitter.com" in u or "x.com" in u:
         return "twitter"
     return None
 
-# --- Конвертация для iOS/Android (Только для Instagram!) ---
+# --- Конвертация (Только для Instagram и YouTube Shorts!) ---
 def convert_video_for_mobile(input_path: str) -> Optional[str]:
     """
     Перекод в mp4 (H.264 + AAC) для совместимости iOS/Android.
-    Используется ТОЛЬКО для Instagram.
+    Используется ТОЛЬКО для Instagram и YouTube Shorts (когда без этого на iOS видео не играет).
     Если аудио уже AAC — копируем его, чтобы снизить нагрузку.
     """
     try:
@@ -163,7 +183,7 @@ def convert_video_for_mobile(input_path: str) -> Optional[str]:
             "-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2",
             output_path,
         ]
-        logging.info(f"Конвертирую в совместимый формат (Instagram only): {output_path}")
+        logging.info(f"Конвертирую в совместимый формат (iOS/Android): {output_path}")
         subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=300)
         return output_path if os.path.exists(output_path) else None
     except subprocess.TimeoutExpired:
@@ -181,17 +201,18 @@ def download_video_from_url(
     url: str,
     platform: str,
     progress_hook: Optional[Callable[[dict], None]] = None,
+    format_override: Optional[str] = None,
+    max_filesize: Optional[int] = None,
 ) -> Optional[str]:
     """
     Скачивает видео и возвращает путь к файлу (как скачано у источника).
-    Репак выполняется отдельно. Перекодировка — ТОЛЬКО для Instagram.
+    Репак выполняется отдельно. Перекодировка — ТОЛЬКО для Instagram и YouTube Shorts (по необходимости для iOS).
     """
     try:
         unique_id = uuid.uuid4()
         output_template = f"downloads/{platform}/{unique_id}.%(ext)s"
         os.makedirs(f"downloads/{platform}", exist_ok=True)
 
-        # Базовые опции
         ydl_opts = {
             "quiet": True,
             "no_warnings": True,
@@ -210,33 +231,38 @@ def download_video_from_url(
             },
         }
 
-        # Поддержка cookiefile только для Instagram (если файл есть)
+        # cookies только для Instagram
         if platform == "instagram" and os.path.exists(COOKIES_FILE):
             ydl_opts["cookiefile"] = COOKIES_FILE
             logging.info(f"Использую cookiefile: {COOKIES_FILE}")
 
-        # Форматная строка и merge-поведение — зависят от платформы
-        if platform == "youtube":
-            # Сначала пробуем прогрессивный mp4, потом avc1+m4a, потом fallback
-            ydl_opts["format"] = (
-                "b[ext=mp4]/"
-                "bv*[vcodec^=avc1][ext=mp4]+ba[ext=m4a]/"
-                "bv*+ba/b"
-            )
-            # без merge_output_format — дадим yt-dlp выбрать контейнер при необходимости
+        # Форматы
+        if format_override:
+            ydl_opts["format"] = format_override
         else:
-            # Для остальных стараемся сразу получить mp4+h264+aac
-            ydl_opts["format"] = (
-                "bestvideo[vcodec^=avc1][ext=mp4]+bestaudio[ext=m4a]/"
-                "best[ext=mp4]/best"
-            )
-            ydl_opts["merge_output_format"] = "mp4"
+            if platform == "youtube_shorts":
+                # Сначала прогрессивный MP4 (совместим с iOS), затем avc1+m4a, потом любой (чтобы не падать)
+                ydl_opts["format"] = (
+                    "b[ext=mp4]/"
+                    "bv*[vcodec^=avc1][ext=mp4]+ba[ext=m4a]/"
+                    "bv*+ba/b"
+                )
+                # merge_output_format не форсим — yt-dlp сам сделает mkv/mp4, потом при необходимости репакнем/перекодируем
+            else:
+                ydl_opts["format"] = (
+                    "bestvideo[vcodec^=avc1][ext=mp4]+bestaudio[ext=m4a]/"
+                    "best[ext=mp4]/best"
+                )
+                ydl_opts["merge_output_format"] = "mp4"
+
+        if max_filesize:
+            ydl_opts["max_filesize"] = max_filesize
 
         if progress_hook:
             ydl_opts["progress_hooks"] = [progress_hook]
 
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            logging.info(f"Начинаю скачивание с {platform}: {url}")
+            logging.info(f"Начинаю скачивание с {display_platform_name(platform)}: {url}")
             ydl.extract_info(url, download=True)
             base_path = f"downloads/{platform}/{unique_id}"
             for ext in ("mp4", "mkv", "webm"):
@@ -265,7 +291,7 @@ async def cmd_start(message: types.Message, state: FSMContext):
         reply_markup=create_main_keyboard(),
     )
 
-@dp.message(lambda m: m.text in ["📥 TikTok", "📸 Instagram", "🎥 YouTube", "🐦 X (Twitter)"])
+@dp.message(lambda m: m.text in ["📥 TikTok", "📸 Instagram", "🎬 YouTube Shorts", "🐦 X (Twitter)"])
 async def handle_platform_choice(message: types.Message, state: FSMContext):
     await message.reply("Отправьте мне ссылку на видео.", reply_markup=ReplyKeyboardRemove())
     await state.set_state(DownloadState.url)
@@ -339,7 +365,7 @@ async def process_video_link(message: types.Message, state: FSMContext):
         except Exception as e:
             logging.debug(f"Ошибка в progress_hook: {e}")
 
-    # Скачиваем
+    # 1) Скачиваем
     video_file = await asyncio.to_thread(download_video_from_url, url, platform, progress_hook)
 
     if not video_file:
@@ -350,45 +376,63 @@ async def process_video_link(message: types.Message, state: FSMContext):
         await message.answer(hint, reply_markup=create_main_keyboard())
         return
 
-    # Проверяем кодеки и решаем, что делать
+    # 2) Проверяем кодеки и делаем репак/перекодку (перекод — только IG и YouTube Shorts)
     vcodec, acodec = await asyncio.to_thread(check_codecs, video_file)
     path_to_send = video_file
     repacked_path = None
     converted_path = None
 
+    need_strict_ios = platform in {"instagram", "youtube_shorts"}
+
+    # Если контейнер/кодеки не совместимы с iOS — пытаемся репакнуть
     if not (vcodec == "h264" and acodec == "aac"):
-        # Сначала пробуем быстрый репак без перекодирования
         repacked_path = await asyncio.to_thread(repack_to_mp4, video_file)
         if repacked_path:
             rv, ra = await asyncio.to_thread(check_codecs, repacked_path)
             if rv == "h264" and ra == "aac":
                 path_to_send = repacked_path
             else:
-                # Перекодировка ТОЛЬКО для Instagram
-                if platform == "instagram":
-                    await loading_message.edit_text("🔧 Конвертирую видео для совместимости iOS/Android (Instagram)…")
+                if need_strict_ios:
+                    await loading_message.edit_text("🔧 Делаю файл совместимым с iOS…")
                     converted_path = await asyncio.to_thread(convert_video_for_mobile, video_file)
                     path_to_send = converted_path or repacked_path or video_file
                 else:
-                    logging.info("Кодеки не совместимы, но перекодирование выключено для этой платформы — отправляю как есть.")
+                    logging.info("Кодеки не совместимы, но перекодирование отключено для этой платформы — отправляю как есть.")
                     path_to_send = repacked_path or video_file
         else:
-            # Репак не удался — перекодируем только Instagram, иначе отправляем как есть
-            if platform == "instagram":
-                await loading_message.edit_text("🔧 Конвертирую видео для совместимости iOS/Android (Instagram)…")
+            if need_strict_ios:
+                await loading_message.edit_text("🔧 Делаю файл совместимым с iOS…")
                 converted_path = await asyncio.to_thread(convert_video_for_mobile, video_file)
                 path_to_send = converted_path or video_file
             else:
                 logging.info("Репак не удался, перекодирование выключено — отправляю исходный файл.")
                 path_to_send = video_file
 
-    # Отправляем
+    # 3) Проверяем лимит Телеграма — НЕ перекачиваем и НЕ уменьшаем, просто сообщаем
+    size_bytes = file_size(path_to_send)
+    if size_bytes > TG_UPLOAD_LIMIT:
+        await loading_message.edit_text(
+            f"⚠️ Файл слишком большой для отправки ботом: {human_mb(size_bytes)} "
+            f"(лимит {TG_UPLOAD_LIMIT_MB} МБ)."
+        )
+        await message.answer("Попробуйте более короткое видео или пришлите другую ссылку.", reply_markup=create_main_keyboard())
+        # Чистим файлы
+        for p in {video_file, repacked_path, converted_path}:
+            if p and os.path.exists(p):
+                try:
+                    os.remove(p)
+                    logging.info(f"Файл {p} удален.")
+                except OSError as e:
+                    logging.error(f"Ошибка при удалении файла {p}: {e}")
+        return
+
+    # 4) Отправляем
     await loading_message.edit_text("📤 Отправляю видео...")
     try:
         video_input = FSInputFile(path_to_send)
         await message.reply_video(video_input)
         await loading_message.delete()
-        logging.info(f"Видео с {platform} успешно отправлено.")
+        logging.info(f"Видео с {display_platform_name(platform)} успешно отправлено.")
         await message.answer("Спасибо за использование меня 🥰", reply_markup=create_main_keyboard())
         await message.answer(
             "💡 Ты также можешь пользоваться inline-режимом:\n"
@@ -423,7 +467,7 @@ async def inline_handler(query: InlineQuery):
         await query.answer(results, cache_time=1)
         return
 
-    logging.info(f"Инлайн-запрос на скачивание с {platform}: {url}")
+    logging.info(f"Инлайн-запрос на скачивание с {display_platform_name(platform)}: {url}")
     video_file_path: Optional[str] = None
     repacked_path: Optional[str] = None
     converted_path: Optional[str] = None
@@ -433,6 +477,8 @@ async def inline_handler(query: InlineQuery):
         if video_file_path:
             send_path = video_file_path
             vcodec, acodec = await asyncio.to_thread(check_codecs, video_file_path)
+            need_strict_ios = platform in {"instagram", "youtube_shorts"}
+
             if not (vcodec == "h264" and acodec == "aac"):
                 repacked_path = await asyncio.to_thread(repack_to_mp4, video_file_path)
                 if repacked_path:
@@ -440,19 +486,22 @@ async def inline_handler(query: InlineQuery):
                     if rv == "h264" and ra == "aac":
                         send_path = repacked_path
                     else:
-                        if platform == "instagram":
+                        if need_strict_ios:
                             converted_path = await asyncio.to_thread(convert_video_for_mobile, video_file_path)
                             send_path = converted_path or repacked_path or video_file_path
                         else:
-                            logging.info("Inline: перекодирование выключено — отправляю как есть.")
                             send_path = repacked_path or video_file_path
                 else:
-                    if platform == "instagram":
+                    if need_strict_ios:
                         converted_path = await asyncio.to_thread(convert_video_for_mobile, video_file_path)
                         send_path = converted_path or video_file_path
                     else:
-                        logging.info("Inline: репак не удался, перекодирование выключено — отправляю исходник.")
                         send_path = video_file_path
+
+            # Проверка лимита
+            if file_size(send_path) > TG_UPLOAD_LIMIT:
+                await query.answer([], cache_time=1)
+                return
 
             sent = await bot.send_video(chat_id=query.from_user.id, video=FSInputFile(send_path))
             file_id = sent.video.file_id
