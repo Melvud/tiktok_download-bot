@@ -1,7 +1,6 @@
 aiogram
-instaloader
 yt-dlp
 requests
 gunicorn
 flask
-
+python-dotenv
