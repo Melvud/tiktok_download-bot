@@ -88,8 +88,6 @@ def download_video_from_url(url: str, platform: str, progress_hook: Union[callab
             "noplaylist": True,
             "merge_output_format": "mp4",
             "ffmpeg_location": FFMPEG_PATH,
-            # ВАЖНО: Эта опция необходима для стабильной работы с TikTok
-            "cookiefile": "cookies.txt",
         }
 
         if progress_hook:
