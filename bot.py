@@ -4,6 +4,7 @@ import re
 import asyncio
 import uuid
 import subprocess
+import time  # Импортируем модуль time
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
 from aiogram.types import (
@@ -15,37 +16,28 @@ from aiogram.types import (
 )
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
+from aiogram.exceptions import TelegramBadRequest  # Для обработки ошибок API
 import yt_dlp
 from dotenv import load_dotenv
 
-# Загрузка переменных окружения из .env файла
 load_dotenv()
 
 # --- Конфигурация ---
 API_TOKEN = os.getenv("BOT_TOKEN")
-FFMPEG_PATH = "bin/ffmpeg"  # Путь к исполняемому файлу ffmpeg
+FFMPEG_PATH = "bin/ffmpeg"
 
-# --- Установка FFmpeg ---
+# --- Установка FFmpeg (остается без изменений) ---
 def install_ffmpeg():
-    """
-    Проверяет наличие FFmpeg и скачивает его, если он отсутствует.
-    Эта функция предназначена для Linux-подобных систем.
-    """
     if not os.path.exists(FFMPEG_PATH):
         logging.info("FFmpeg не найден, начинается скачивание...")
         try:
             os.makedirs("bin", exist_ok=True)
-            # URL для статической сборки FFmpeg для amd64
             ffmpeg_url = "https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz"
             archive_path = "ffmpeg.tar.xz"
-
-            # Скачивание архива
             subprocess.run(
                 ["curl", "-L", "-o", archive_path, ffmpeg_url], check=True
             )
             logging.info("Архив FFmpeg скачан.")
-
-            # Распаковка и перемещение
             temp_dir = "ffmpeg_temp"
             os.makedirs(temp_dir, exist_ok=True)
             subprocess.run(
@@ -53,42 +45,25 @@ def install_ffmpeg():
                 check=True,
             )
             os.rename(os.path.join(temp_dir, "ffmpeg"), FFMPEG_PATH)
-
-            # Предоставление прав на выполнение
             os.chmod(FFMPEG_PATH, 0o755)
-
-            # Очистка
             os.remove(archive_path)
             os.rmdir(temp_dir)
-
             logging.info("FFmpeg успешно установлен!")
-        except (subprocess.CalledProcessError, FileNotFoundError) as e:
-            logging.error(f"Не удалось установить FFmpeg: {e}")
-            logging.error(
-                "Пожалуйста, установите FFmpeg вручную или убедитесь, что 'curl' и 'tar' доступны в вашей системе."
-            )
-            # В зависимости от критичности, можно либо продолжить, либо завершить работу
-            # exit(1) # Раскомментируйте, если FFmpeg является обязательным для работы
         except Exception as e:
-            logging.error(f"Произошла непредвиденная ошибка при установке FFmpeg: {e}")
+            logging.error(f"Не удалось установить FFmpeg: {e}")
 
-
-# --- Настройка логирования ---
+# --- Настройка логирования и инициализация бота (без изменений) ---
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
 )
-
-# --- Инициализация бота и диспетчера ---
 bot = Bot(token=API_TOKEN)
 dp = Dispatcher()
 
-# --- Состояния FSM ---
+# ... (Состояния FSM и Клавиатуры остаются без изменений) ...
 class DownloadState(StatesGroup):
     url = State()
 
-# --- Клавиатуры ---
 def create_main_keyboard():
-    """Создает главную клавиатуру с выбором платформ."""
     keyboard = ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text="📥 TikTok")],
@@ -100,11 +75,12 @@ def create_main_keyboard():
         one_time_keyboard=True,
     )
     return keyboard
-
-# --- Функции скачивания ---
-def download_video_from_url(url: str, platform: str) -> str | None:
+# --- Обновленная функция скачивания ---
+def download_video_from_url(
+    url: str, platform: str, progress_hook: callable | None = None
+) -> str | None:
     """
-    Универсальная функция для скачивания видео с использованием yt-dlp.
+    Универсальная функция для скачивания видео с передачей прогресс-хука.
     """
     try:
         unique_id = uuid.uuid4()
@@ -118,19 +94,24 @@ def download_video_from_url(url: str, platform: str) -> str | None:
             "noplaylist": True,
             "merge_output_format": "mp4",
             "ffmpeg_location": FFMPEG_PATH,
+            # 'proxy': 'YOUR_PROXY_URL' # Раскомментируйте, если используете прокси
         }
+
+        # <<< НОВОЕ: Добавляем хук в опции, если он был передан
+        if progress_hook:
+            ydl_opts["progress_hooks"] = [progress_hook]
 
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             logging.info(f"Начинаю скачивание с {platform}: {url}")
             info_dict = ydl.extract_info(url, download=True)
-            
+
             base_path = f"downloads/{platform}/{unique_id}"
-            for ext in ['mp4', 'mkv', 'webm']:
+            for ext in ["mp4", "mkv", "webm"]:
                 video_file = f"{base_path}.{ext}"
                 if os.path.exists(video_file):
                     logging.info(f"Видео успешно скачано: {video_file}")
                     return video_file
-            
+
             logging.error(f"Ошибка: скачанный файл не найден для {url}")
             return None
 
@@ -142,22 +123,16 @@ def download_video_from_url(url: str, platform: str) -> str | None:
         return None
 
 def get_platform_from_url(url: str) -> str | None:
-    """Определяет платформу по URL."""
-    if "tiktok.com" in url:
-        return "tiktok"
-    if "instagram.com" in url:
-        return "instagram"
-    if "youtube.com" in url or "youtu.be" in url:
-        return "youtube"
-    if "twitter.com" in url or "x.com" in url:
-        return "twitter"
+    # ... (эта функция без изменений)
+    if "tiktok.com" in url: return "tiktok"
+    if "instagram.com" in url: return "instagram"
+    if "youtube.com" in url or "youtu.be" in url: return "youtube"
+    if "twitter.com" in url or "x.com" in url: return "twitter"
     return None
 
-# --- Обработчики команд и сообщений ---
-
+# --- Обработчики команд и сообщений (cmd_start и handle_platform_choice без изменений) ---
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message, state: FSMContext):
-    """Обработчик команды /start."""
     logging.info(f"Пользователь {message.from_user.id} запустил бота.")
     await state.clear()
     await message.reply(
@@ -168,38 +143,86 @@ async def cmd_start(message: types.Message, state: FSMContext):
 
 @dp.message(lambda message: message.text in ["📥 TikTok", "📸 Instagram", "🎥 YouTube", "🐦 X (Twitter)"])
 async def handle_platform_choice(message: types.Message, state: FSMContext):
-    """Обработчик для кнопок выбора платформы."""
     await message.reply(
         "Отправьте мне ссылку на видео.", reply_markup=types.ReplyKeyboardRemove()
     )
     await state.set_state(DownloadState.url)
 
+
+# --- <<< ЗДЕСЬ ОСНОВНЫЕ ИЗМЕНЕНИЯ >>> ---
 @dp.message(DownloadState.url)
 @dp.message(lambda message: message.text and message.text.startswith("http"))
 async def process_video_link(message: types.Message, state: FSMContext):
-    """Обрабатывает полученную ссылку на видео."""
     url = message.text.strip()
     await state.clear()
 
     platform = get_platform_from_url(url)
     if not platform:
-        await message.reply("Не могу определить платформу по этой ссылке. Пожалуйста, убедитесь, что ссылка верна.")
+        await message.reply("Не могу определить платформу по этой ссылке.")
         return
 
-    loading_message = await message.reply("📥 Видео загружается, пожалуйста, подождите...")
+    # Отправляем начальное сообщение, которое будем редактировать
+    loading_message = await message.reply("📥 Подготовка к загрузке...")
 
-    video_file = await asyncio.to_thread(download_video_from_url, url, platform)
+    # --- Создание прогресс-хука ---
+    last_update_time = 0
     
-    await loading_message.delete()
+    def progress_hook(d):
+        nonlocal last_update_time
+        if d["status"] == "downloading":
+            current_time = time.time()
+            # Ограничиваем частоту обновлений (например, раз в 1.5 секунды)
+            if current_time - last_update_time < 1.5:
+                return
+
+            downloaded = d.get("downloaded_bytes", 0)
+            total = d.get("total_bytes") or d.get("total_bytes_estimate", 0)
+
+            if total > 0:
+                percent = downloaded / total * 100
+                speed = d.get("speed", 0) or 0
+                speed_mbps = speed / 1024 / 1024
+                
+                # Создаем текстовый прогресс-бар
+                progress_bar = "".join(
+                    ["█" if i < percent / 10 else "░" for i in range(10)]
+                )
+                
+                status_text = (
+                    f"📥 **Скачиваю видео...**\n"
+                    f"`{progress_bar}` {percent:.1f}%\n"
+                    f"Скорость: {speed_mbps:.2f} МБ/с"
+                )
+
+                try:
+                    # Запускаем асинхронную задачу редактирования сообщения
+                    # из синхронной функции (хука)
+                    asyncio.run_coroutine_threadsafe(
+                        loading_message.edit_text(status_text, parse_mode="Markdown"),
+                        asyncio.get_running_loop()
+                    )
+                    last_update_time = current_time
+                except TelegramBadRequest:
+                    # Игнорируем ошибку, если текст сообщения не изменился
+                    pass
+    
+    # Запускаем скачивание в отдельном потоке, передавая наш хук
+    video_file = await asyncio.to_thread(
+        download_video_from_url, url, platform, progress_hook
+    )
+
+    # Меняем текст после завершения скачивания
+    await loading_message.edit_text("📤 Отправляю видео...")
 
     if video_file:
         try:
             video_input = FSInputFile(video_file)
             await message.reply_video(video_input)
-            logging.info(f"Видео с {platform} успешно отправлено пользователю {message.from_user.id}.")
+            await loading_message.delete() # Удаляем статусное сообщение
+            logging.info(f"Видео с {platform} успешно отправлено.")
         except Exception as e:
             logging.error(f"Ошибка при отправке видео: {e}")
-            await message.reply("⚠️ Произошла ошибка при отправке видео. Возможно, файл слишком большой.")
+            await loading_message.edit_text("⚠️ Ошибка при отправке видео.")
         finally:
             try:
                 os.remove(video_file)
@@ -207,9 +230,9 @@ async def process_video_link(message: types.Message, state: FSMContext):
             except OSError as e:
                 logging.error(f"Ошибка при удалении файла {video_file}: {e}")
     else:
-        await message.reply("❌ Не удалось скачать видео по этой ссылке. Пожалуйста, попробуйте другую.")
+        await loading_message.edit_text("❌ Не удалось скачать видео по этой ссылке.")
 
-# --- Обработчик инлайн-режима ---
+# --- Инлайн-режим (остается без изменений) ---
 
 @dp.inline_query()
 async def inline_handler(query: InlineQuery):
