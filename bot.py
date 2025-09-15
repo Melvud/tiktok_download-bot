@@ -52,10 +52,11 @@ def install_ffmpeg() -> None:
         temp_dir = "ffmpeg_temp"
         os.makedirs(temp_dir, exist_ok=True)
         subprocess.run(["tar", "-xJf", archive_path, "-C", temp_dir, "--strip-components=1"], check=True)
-        # Переносим и ffmpeg, и ffprobe
+        # В архиве есть ffmpeg и ffprobe
         os.rename(os.path.join(temp_dir, "ffmpeg"), FFMPEG_PATH)
-        if os.path.exists(os.path.join(temp_dir, "ffprobe")):
-            os.rename(os.path.join(temp_dir, "ffprobe"), "bin/ffprobe")
+        ffprobe_src = os.path.join(temp_dir, "ffprobe")
+        if os.path.exists(ffprobe_src):
+            os.rename(ffprobe_src, "bin/ffprobe")
             os.chmod("bin/ffprobe", 0o755)
         os.chmod(FFMPEG_PATH, 0o755)
         os.remove(archive_path)
@@ -69,11 +70,13 @@ def check_codecs(file_path: str) -> tuple[str, str]:
     try:
         vcodec = subprocess.check_output(
             [ffprobe_bin(), "-v", "error", "-select_streams", "v:0",
-             "-show_entries", "stream=codec_name", "-of", "csv=p=0", file_path]
+             "-show_entries", "stream=codec_name", "-of", "csv=p=0", file_path],
+            timeout=30
         ).decode().strip()
         acodec = subprocess.check_output(
             [ffprobe_bin(), "-v", "error", "-select_streams", "a:0",
-             "-show_entries", "stream=codec_name", "-of", "csv=p=0", file_path]
+             "-show_entries", "stream=codec_name", "-of", "csv=p=0", file_path],
+            timeout=30
         ).decode().strip()
         return vcodec, acodec
     except Exception as e:
@@ -86,10 +89,14 @@ def repack_to_mp4(input_path: str) -> Optional[str]:
         base, _ = os.path.splitext(input_path)
         out = f"{base}_repack.mp4"
         subprocess.run(
-            [ffmpeg_bin(), "-y", "-i", input_path, "-c", "copy", "-movflags", "+faststart", out],
-            check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE
+            [ffmpeg_bin(), "-nostdin", "-loglevel", "error",
+             "-y", "-i", input_path, "-c", "copy", "-movflags", "+faststart", out],
+            check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=180
         )
         return out if os.path.exists(out) else None
+    except subprocess.TimeoutExpired:
+        logging.error("Репак превысил таймаут и был прерван.")
+        return None
     except Exception as e:
         logging.error(f"Ошибка репака: {e}")
         return None
@@ -132,38 +139,37 @@ def get_platform_from_url(url: str) -> Optional[str]:
         return "twitter"
     return None
 
-# --- Конвертация для iOS/Android (как крайний вариант) ---
+# --- Конвертация для iOS/Android (крайний вариант) ---
 def convert_video_for_mobile(input_path: str) -> Optional[str]:
     """
-    Преобразует видео в mp4 (H.264 + AAC), совместимое с iOS/Android/Telegram iOS.
-    Возвращает путь к конвертированному файлу или None при ошибке.
+    Перекод в mp4 (H.264 + AAC) для совместимости iOS/Android.
+    Добавлены -nostdin, -loglevel error и таймаут, чтобы не зависало.
+    Если аудио уже AAC — копируем его, чтобы снизить нагрузку.
     """
     try:
         base, _ext = os.path.splitext(input_path)
         output_path = f"{base}_ios.mp4"
+
+        vcodec, acodec = check_codecs(input_path)
+        audio_args = ["-c:a", "copy"] if acodec == "aac" else ["-c:a", "aac", "-b:a", "128k"]
+
         cmd = [
-            ffmpeg_bin(),
-            "-y",
-            "-i", input_path,
-            # Видео: H.264, профили для широкой совместимости, прогрессивная разметка
-            "-c:v", "libx264",
-            "-preset", "fast",
-            "-crf", "23",
-            "-profile:v", "high",
-            "-level:v", "4.0",
+            ffmpeg_bin(), "-nostdin", "-loglevel", "error",
+            "-y", "-i", input_path,
+            "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
+            "-profile:v", "high", "-level:v", "4.0",
             "-pix_fmt", "yuv420p",
-            # Аудио: AAC
-            "-c:a", "aac",
-            "-b:a", "128k",
-            # Для стриминга/быстрого старта в Telegram/iOS
+            *audio_args,
             "-movflags", "+faststart",
-            # Иногда исходные ширина/высота бывают нечётными — поправим
             "-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2",
             output_path,
         ]
         logging.info(f"Конвертирую в совместимый формат: {output_path}")
-        subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=600)
         return output_path if os.path.exists(output_path) else None
+    except subprocess.TimeoutExpired:
+        logging.error("Конвертация превысила таймаут и была прервана.")
+        return None
     except subprocess.CalledProcessError as e:
         logging.error(f"Ошибка конвертации видео: {e}")
         return None
@@ -179,7 +185,7 @@ def download_video_from_url(
 ) -> Optional[str]:
     """
     Скачивает видео и возвращает путь к файлу (как скачано у источника).
-    Конвертация/репак выполняются отдельно.
+    Репак/конвертация выполняются отдельно.
     """
     try:
         unique_id = uuid.uuid4()
@@ -306,7 +312,7 @@ async def process_video_link(message: types.Message, state: FSMContext):
         await message.answer(hint, reply_markup=create_main_keyboard())
         return
 
-    # Определяем, нужно ли вмешательство
+    # Проверяем кодеки и решаем, что делать
     vcodec, acodec = await asyncio.to_thread(check_codecs, video_file)
     path_to_send = video_file
     repacked_path = None
@@ -320,7 +326,7 @@ async def process_video_link(message: types.Message, state: FSMContext):
             if rv == "h264" and ra == "aac":
                 path_to_send = repacked_path
             else:
-                # Только теперь — конвертация
+                # Только теперь — конвертация (с таймаутом и -nostdin)
                 await loading_message.edit_text("🔧 Конвертирую видео для совместимости iOS/Android...")
                 converted_path = await asyncio.to_thread(convert_video_for_mobile, video_file)
                 path_to_send = converted_path or repacked_path or video_file
