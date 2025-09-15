@@ -34,6 +34,11 @@ def ffmpeg_bin() -> str:
     """Возвращает путь к ffmpeg: локальный бинарь или системный."""
     return FFMPEG_PATH if os.path.exists(FFMPEG_PATH) else "ffmpeg"
 
+def ffprobe_bin() -> str:
+    """Возвращает путь к ffprobe: локальный бинарь или системный."""
+    local = "bin/ffprobe"
+    return local if os.path.exists(local) else "ffprobe"
+
 def install_ffmpeg() -> None:
     """Попытка скачать статический ffmpeg (Linux x86_64). На macOS/Windows поставьте системно."""
     if os.path.exists(FFMPEG_PATH):
@@ -47,14 +52,47 @@ def install_ffmpeg() -> None:
         temp_dir = "ffmpeg_temp"
         os.makedirs(temp_dir, exist_ok=True)
         subprocess.run(["tar", "-xJf", archive_path, "-C", temp_dir, "--strip-components=1"], check=True)
-        # В архиве есть и ffprobe, но для простоты нам нужен только ffmpeg
+        # Переносим и ffmpeg, и ffprobe
         os.rename(os.path.join(temp_dir, "ffmpeg"), FFMPEG_PATH)
+        if os.path.exists(os.path.join(temp_dir, "ffprobe")):
+            os.rename(os.path.join(temp_dir, "ffprobe"), "bin/ffprobe")
+            os.chmod("bin/ffprobe", 0o755)
         os.chmod(FFMPEG_PATH, 0o755)
         os.remove(archive_path)
         os.rmdir(temp_dir)
-        logging.info("FFmpeg успешно установлен!")
+        logging.info("FFmpeg/FFprobe успешно установлены!")
     except Exception as e:
         logging.error(f"Не удалось установить FFmpeg: {e}")
+
+def check_codecs(file_path: str) -> tuple[str, str]:
+    """Возвращает (видеокодек, аудиокодек) через ffprobe, либо ('','') при ошибке."""
+    try:
+        vcodec = subprocess.check_output(
+            [ffprobe_bin(), "-v", "error", "-select_streams", "v:0",
+             "-show_entries", "stream=codec_name", "-of", "csv=p=0", file_path]
+        ).decode().strip()
+        acodec = subprocess.check_output(
+            [ffprobe_bin(), "-v", "error", "-select_streams", "a:0",
+             "-show_entries", "stream=codec_name", "-of", "csv=p=0", file_path]
+        ).decode().strip()
+        return vcodec, acodec
+    except Exception as e:
+        logging.error(f"Ошибка при проверке кодеков: {e}")
+        return "", ""
+
+def repack_to_mp4(input_path: str) -> Optional[str]:
+    """Быстрый репак без перекодирования (минимальная нагрузка на CPU)."""
+    try:
+        base, _ = os.path.splitext(input_path)
+        out = f"{base}_repack.mp4"
+        subprocess.run(
+            [ffmpeg_bin(), "-y", "-i", input_path, "-c", "copy", "-movflags", "+faststart", out],
+            check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE
+        )
+        return out if os.path.exists(out) else None
+    except Exception as e:
+        logging.error(f"Ошибка репака: {e}")
+        return None
 
 # --- Логирование и инициализация бота ---
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -94,7 +132,7 @@ def get_platform_from_url(url: str) -> Optional[str]:
         return "twitter"
     return None
 
-# --- Конвертация для iOS/Android ---
+# --- Конвертация для iOS/Android (как крайний вариант) ---
 def convert_video_for_mobile(input_path: str) -> Optional[str]:
     """
     Преобразует видео в mp4 (H.264 + AAC), совместимое с iOS/Android/Telegram iOS.
@@ -141,7 +179,7 @@ def download_video_from_url(
 ) -> Optional[str]:
     """
     Скачивает видео и возвращает путь к файлу (как скачано у источника).
-    Конвертация выполняется отдельно.
+    Конвертация/репак выполняются отдельно.
     """
     try:
         unique_id = uuid.uuid4()
@@ -151,7 +189,8 @@ def download_video_from_url(
         ydl_opts = {
             "quiet": True,
             "no_warnings": True,
-            "format": "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
+            # Сразу просим H.264 (avc1) + AAC в MP4
+            "format": "bestvideo[vcodec^=avc1][ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]",
             "outtmpl": output_template,
             "noplaylist": True,
             "merge_output_format": "mp4",
@@ -267,14 +306,29 @@ async def process_video_link(message: types.Message, state: FSMContext):
         await message.answer(hint, reply_markup=create_main_keyboard())
         return
 
-    # Конвертируем для iOS/Android
-    await loading_message.edit_text("🔧 Конвертирую видео для совместимости iOS/Android...")
-    converted_path = await asyncio.to_thread(convert_video_for_mobile, video_file)
-    path_to_send = converted_path or video_file
-    if converted_path:
-        logging.info(f"Конвертация завершена: {converted_path}")
-    else:
-        logging.info("Конвертация не удалась, отправляю исходный файл.")
+    # Определяем, нужно ли вмешательство
+    vcodec, acodec = await asyncio.to_thread(check_codecs, video_file)
+    path_to_send = video_file
+    repacked_path = None
+    converted_path = None
+
+    if not (vcodec == "h264" and acodec == "aac"):
+        # Сначала пробуем быстрый репак без перекодирования
+        repacked_path = await asyncio.to_thread(repack_to_mp4, video_file)
+        if repacked_path:
+            rv, ra = await asyncio.to_thread(check_codecs, repacked_path)
+            if rv == "h264" and ra == "aac":
+                path_to_send = repacked_path
+            else:
+                # Только теперь — конвертация
+                await loading_message.edit_text("🔧 Конвертирую видео для совместимости iOS/Android...")
+                converted_path = await asyncio.to_thread(convert_video_for_mobile, video_file)
+                path_to_send = converted_path or repacked_path or video_file
+        else:
+            # Репак не удался — сразу конвертируем
+            await loading_message.edit_text("🔧 Конвертирую видео для совместимости iOS/Android...")
+            converted_path = await asyncio.to_thread(convert_video_for_mobile, video_file)
+            path_to_send = converted_path or video_file
 
     # Отправляем
     await loading_message.edit_text("📤 Отправляю видео...")
@@ -285,16 +339,17 @@ async def process_video_link(message: types.Message, state: FSMContext):
         logging.info(f"Видео с {platform} успешно отправлено.")
         await message.answer("Спасибо за использование меня 🥰", reply_markup=create_main_keyboard())
         await message.answer(
-        "💡 Ты также можешь пользоваться inline-режимом:\n"
-        "просто напиши @tktdown_bot <ссылка> прямо в любом чате.",
-        reply_markup=create_main_keyboard(),)
+            "💡 Ты также можешь пользоваться inline-режимом:\n"
+            "просто напиши @tktdown_bot <ссылка> прямо в любом чате.",
+            reply_markup=create_main_keyboard(),
+        )
     except Exception as e:
         logging.exception(f"Ошибка при отправке видео: {e}")
         await loading_message.edit_text("⚠️ Ошибка при отправке видео.")
         await message.answer("Попробуйте ещё раз или выберите платформу:", reply_markup=create_main_keyboard())
     finally:
         # Чистим файлы
-        for p in {video_file, converted_path}:
+        for p in {video_file, repacked_path, converted_path}:
             if p and os.path.exists(p):
                 try:
                     os.remove(p)
@@ -318,13 +373,26 @@ async def inline_handler(query: InlineQuery):
 
     logging.info(f"Инлайн-запрос на скачивание с {platform}: {url}")
     video_file_path: Optional[str] = None
+    repacked_path: Optional[str] = None
     converted_path: Optional[str] = None
     try:
-        # Скачиваем и конвертируем так же, как в обычном режиме
+        # Скачиваем
         video_file_path = await asyncio.to_thread(download_video_from_url, url, platform)
         if video_file_path:
-            converted_path = await asyncio.to_thread(convert_video_for_mobile, video_file_path)
-            send_path = converted_path or video_file_path
+            send_path = video_file_path
+            vcodec, acodec = await asyncio.to_thread(check_codecs, video_file_path)
+            if not (vcodec == "h264" and acodec == "aac"):
+                repacked_path = await asyncio.to_thread(repack_to_mp4, video_file_path)
+                if repacked_path:
+                    rv, ra = await asyncio.to_thread(check_codecs, repacked_path)
+                    if rv == "h264" and ra == "aac":
+                        send_path = repacked_path
+                    else:
+                        converted_path = await asyncio.to_thread(convert_video_for_mobile, video_file_path)
+                        send_path = converted_path or repacked_path or video_file_path
+                else:
+                    converted_path = await asyncio.to_thread(convert_video_for_mobile, video_file_path)
+                    send_path = converted_path or video_file_path
 
             sent = await bot.send_video(chat_id=query.from_user.id, video=FSInputFile(send_path))
             file_id = sent.video.file_id
@@ -341,7 +409,7 @@ async def inline_handler(query: InlineQuery):
     except Exception as e:
         logging.exception(f"Ошибка в инлайн-режиме при обработке файла: {e}")
     finally:
-        for p in {video_file_path, converted_path}:
+        for p in {video_file_path, repacked_path, converted_path}:
             if p and os.path.exists(p):
                 try:
                     os.remove(p)
