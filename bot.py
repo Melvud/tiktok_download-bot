@@ -108,6 +108,7 @@ def download_video_from_url(
 
         ydl_opts = {
             "quiet": True,
+            "no_warnings": True,  # скрываем ворнинги в логах
             "format": "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
             "outtmpl": output_template,
             "noplaylist": True,
@@ -199,14 +200,12 @@ async def process_video_link(message: types.Message, state: FSMContext):
                         loading_message.edit_text(status_text, parse_mode="Markdown"),
                         loop,
                     )
-                    # Мгновенно поднимем исключение, если оно есть (не блокируясь надолго)
                     try:
                         fut.result(timeout=0)
                     except Exception:
                         pass
                     last_update_time = current_time
         except Exception as e:
-            # Никогда не роняем загрузку из-за хука
             logging.debug(f"Ошибка в progress_hook: {e}")
 
     # Скачивание в пуле потоков, чтобы не блокировать обработчик
@@ -219,13 +218,14 @@ async def process_video_link(message: types.Message, state: FSMContext):
             await message.reply_video(video_input)
             await loading_message.delete()
             logging.info(f"Видео с {platform} успешно отправлено.")
-
-            # ✨ Новое: благодарность + возврат клавиатуры
+            # благодарность + возврат клавиатуры
             await message.answer("Спасибо за использование меня 🥰", reply_markup=create_main_keyboard())
-
         except Exception as e:
             logging.exception(f"Ошибка при отправке видео: {e}")
-            await loading_message.edit_text("⚠️ Ошибка при отправке видео.", reply_markup=create_main_keyboard())
+            # редактируем без клавиатуры...
+            await loading_message.edit_text("⚠️ Ошибка при отправке видео.")
+            # ...а клавиатуру шлём отдельным сообщением
+            await message.answer("Попробуйте ещё раз или выберите платформу:", reply_markup=create_main_keyboard())
         finally:
             try:
                 os.remove(video_file)
@@ -233,7 +233,13 @@ async def process_video_link(message: types.Message, state: FSMContext):
             except OSError as e:
                 logging.error(f"Ошибка при удалении файла {video_file}: {e}")
     else:
-        await loading_message.edit_text("❌ Не удалось скачать видео по этой ссылке.", reply_markup=create_main_keyboard())
+        # нельзя передавать ReplyKeyboardMarkup в edit_text -> отправим отдельно
+        await loading_message.edit_text("❌ Не удалось скачать видео по этой ссылке.")
+        # дружелюбная подсказка и клавиатура
+        hint = "Это мог быть приватный/возрастной ролик или Instagram попросил вход. Попробуйте другую ссылку."
+        if platform == "instagram":
+            hint = "Instagram мог потребовать вход или сработал лимит. Попробуйте другую публичную ссылку."
+        await message.answer(hint, reply_markup=create_main_keyboard())
 
 # --- Инлайн режим ---
 @dp.inline_query()
