@@ -138,24 +138,24 @@ def get_platform_from_url(url: str) -> Optional[str]:
         return "twitter"
     return None
 
-# --- Конвертация для iOS/Android (крайний вариант) ---
+# --- Конвертация для iOS/Android (Только для Instagram!) ---
 def convert_video_for_mobile(input_path: str) -> Optional[str]:
     """
     Перекод в mp4 (H.264 + AAC) для совместимости iOS/Android.
-    Добавлены -nostdin, -loglevel error и таймаут, чтобы не зависало.
+    Используется ТОЛЬКО для Instagram.
     Если аудио уже AAC — копируем его, чтобы снизить нагрузку.
     """
     try:
         base, _ext = os.path.splitext(input_path)
         output_path = f"{base}_ios.mp4"
 
-        vcodec, acodec = check_codecs(input_path)
+        _vcodec, acodec = check_codecs(input_path)
         audio_args = ["-c:a", "copy"] if acodec == "aac" else ["-c:a", "aac", "-b:a", "128k"]
 
         cmd = [
             ffmpeg_bin(), "-nostdin", "-loglevel", "error",
             "-y", "-i", input_path,
-            "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
+            "-c:v", "libx264", "-preset", "ultrafast", "-crf", "23",
             "-profile:v", "high", "-level:v", "4.0",
             "-pix_fmt", "yuv420p",
             *audio_args,
@@ -163,8 +163,8 @@ def convert_video_for_mobile(input_path: str) -> Optional[str]:
             "-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2",
             output_path,
         ]
-        logging.info(f"Конвертирую в совместимый формат: {output_path}")
-        subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=600)
+        logging.info(f"Конвертирую в совместимый формат (Instagram only): {output_path}")
+        subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=300)
         return output_path if os.path.exists(output_path) else None
     except subprocess.TimeoutExpired:
         logging.error("Конвертация превысила таймаут и была прервана.")
@@ -184,7 +184,7 @@ def download_video_from_url(
 ) -> Optional[str]:
     """
     Скачивает видео и возвращает путь к файлу (как скачано у источника).
-    Репак/конвертация выполняются отдельно.
+    Репак выполняется отдельно. Перекодировка — ТОЛЬКО для Instagram.
     """
     try:
         unique_id = uuid.uuid4()
@@ -217,12 +217,15 @@ def download_video_from_url(
 
         # Форматная строка и merge-поведение — зависят от платформы
         if platform == "youtube":
+            # Сначала пробуем прогрессивный mp4, потом avc1+m4a, потом fallback
             ydl_opts["format"] = (
-                "bv*[vcodec^=avc1][ext=mp4]+ba[ext=m4a]/"
                 "b[ext=mp4]/"
+                "bv*[vcodec^=avc1][ext=mp4]+ba[ext=m4a]/"
                 "bv*+ba/b"
             )
+            # без merge_output_format — дадим yt-dlp выбрать контейнер при необходимости
         else:
+            # Для остальных стараемся сразу получить mp4+h264+aac
             ydl_opts["format"] = (
                 "bestvideo[vcodec^=avc1][ext=mp4]+bestaudio[ext=m4a]/"
                 "best[ext=mp4]/best"
@@ -361,15 +364,23 @@ async def process_video_link(message: types.Message, state: FSMContext):
             if rv == "h264" and ra == "aac":
                 path_to_send = repacked_path
             else:
-                # Только теперь — конвертация (с таймаутом и -nostdin)
-                await loading_message.edit_text("🔧 Конвертирую видео для совместимости iOS/Android...")
-                converted_path = await asyncio.to_thread(convert_video_for_mobile, video_file)
-                path_to_send = converted_path or repacked_path or video_file
+                # Перекодировка ТОЛЬКО для Instagram
+                if platform == "instagram":
+                    await loading_message.edit_text("🔧 Конвертирую видео для совместимости iOS/Android (Instagram)…")
+                    converted_path = await asyncio.to_thread(convert_video_for_mobile, video_file)
+                    path_to_send = converted_path or repacked_path or video_file
+                else:
+                    logging.info("Кодеки не совместимы, но перекодирование выключено для этой платформы — отправляю как есть.")
+                    path_to_send = repacked_path or video_file
         else:
-            # Репак не удался — сразу конвертируем
-            await loading_message.edit_text("🔧 Конвертирую видео для совместимости iOS/Android...")
-            converted_path = await asyncio.to_thread(convert_video_for_mobile, video_file)
-            path_to_send = converted_path or video_file
+            # Репак не удался — перекодируем только Instagram, иначе отправляем как есть
+            if platform == "instagram":
+                await loading_message.edit_text("🔧 Конвертирую видео для совместимости iOS/Android (Instagram)…")
+                converted_path = await asyncio.to_thread(convert_video_for_mobile, video_file)
+                path_to_send = converted_path or video_file
+            else:
+                logging.info("Репак не удался, перекодирование выключено — отправляю исходный файл.")
+                path_to_send = video_file
 
     # Отправляем
     await loading_message.edit_text("📤 Отправляю видео...")
@@ -429,11 +440,19 @@ async def inline_handler(query: InlineQuery):
                     if rv == "h264" and ra == "aac":
                         send_path = repacked_path
                     else:
-                        converted_path = await asyncio.to_thread(convert_video_for_mobile, video_file_path)
-                        send_path = converted_path or repacked_path or video_file_path
+                        if platform == "instagram":
+                            converted_path = await asyncio.to_thread(convert_video_for_mobile, video_file_path)
+                            send_path = converted_path or repacked_path or video_file_path
+                        else:
+                            logging.info("Inline: перекодирование выключено — отправляю как есть.")
+                            send_path = repacked_path or video_file_path
                 else:
-                    converted_path = await asyncio.to_thread(convert_video_for_mobile, video_file_path)
-                    send_path = converted_path or video_file_path
+                    if platform == "instagram":
+                        converted_path = await asyncio.to_thread(convert_video_for_mobile, video_file_path)
+                        send_path = converted_path or video_file_path
+                    else:
+                        logging.info("Inline: репак не удался, перекодирование выключено — отправляю исходник.")
+                        send_path = video_file_path
 
             sent = await bot.send_video(chat_id=query.from_user.id, video=FSInputFile(send_path))
             file_id = sent.video.file_id
